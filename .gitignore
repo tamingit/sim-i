@@ -11,8 +11,10 @@ TestResults/
 # Claude Code local files
 .claude/
 
-# local settings, such as the users (.env.example is the template)
+# local settings, such as the users, and any variant of them (.env.local ...); .env.example is the template
 .env
+.env.*
+!.env.example
 
 # The libraries' SQLite databases (FAKE_IBMI_DATABASE_DIR in .env.example)
 /data/
