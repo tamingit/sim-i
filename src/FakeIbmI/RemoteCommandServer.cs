@@ -46,7 +46,7 @@ public sealed class RemoteCommandServer : HostServer
     {
         Users = users ?? Users.Defaults();
         Machine = machine ?? Machine.Open();
-        _spoolLists = new SpoolOpenList(() => [.. SpooledFile.Defaults(), .. Machine.Store.Spools().Select(SpooledFile.From)], () => Users.Main.User);
+        _spoolLists = new SpoolOpenList(AllSpooledFiles, () => Users.Main.User);
     }
 
     /// <summary>
@@ -197,7 +197,14 @@ public sealed class RemoteCommandServer : HostServer
             }
             return Frame(ServerId, 0x8003, [0, 0, 0, 0], correlation, 0, [.. returned]);
         }
-        var (answers, answered) = Answer(name, parameters, id);
+        var (answers, answered) = Answer(name, parameters, id, user);
+        if (answers is null)
+        {
+            Record($"PGM {name}");
+            Log($"rmtcmd #{id} call {name}: {answered}");
+            // Return code 0x0500: the program failed. No messages go back with it.
+            return Frame(ServerId, 0x8003, [0x05, 0, 0, 0], correlation);
+        }
         var outputs = new List<(int Id, byte[] Data)>();
         for (var i = 0; i < parameters.Count; i++)
         {
@@ -295,11 +302,14 @@ public sealed class RemoteCommandServer : HostServer
     /// <summary>One program parameter: its usage, length, and the input it brought (full length).</summary>
     private sealed record Parameter(ParameterKind Kind, int MaxLength, byte[] Input);
 
+    /// <summary>The spooled files the open list and the viewer see: the placeholders, then what programs printed.</summary>
+    private List<SpooledFile> AllSpooledFiles() => [.. SpooledFile.Defaults(), .. Machine.Store.Spools().Select(SpooledFile.From)];
+
     /// <summary>
     /// The output a program gives, by parameter index (any other output is zeros), and what the log
     /// says about it. Only these programs answer; their inputs are names, not secrets.
     /// </summary>
-    private (Dictionary<int, byte[]> Outputs, string Answered) Answer(string program, List<Parameter> parameters, int id)
+    private (Dictionary<int, byte[]>? Outputs, string Answered) Answer(string program, List<Parameter> parameters, int id, string user)
     {
         string Text(int index, int length) =>
             index < parameters.Count ? Ebcdic.Decode(parameters[index].Input.AsSpan(0, Math.Min(length, parameters[index].Input.Length))).TrimEnd() : "";
@@ -326,7 +336,7 @@ public sealed class RemoteCommandServer : HostServer
             // it (the list information comes back in parameter 2), get entries from it, close it.
             case "QSYS/QGYOLSPL" when parameters.Count >= 8:
             {
-                var information = _spoolLists.Open(parameters[5].Input, parameters[7].Input.AsSpan(0, Math.Min(8, parameters[7].Input.Length)).ToArray());
+                var information = _spoolLists.Open(parameters[5].Input, parameters[7].Input.AsSpan(0, Math.Min(8, parameters[7].Input.Length)).ToArray(), user);
                 return information is null
                     ? ([], $"didn't list spooled files: format {Text(7, 8)} isn't supported")
                     : (new() { [2] = information }, $"listed {BinaryPrimitives.ReadInt32BigEndian(information)} spooled files");
@@ -342,6 +352,29 @@ public sealed class RemoteCommandServer : HostServer
             case "QSYS/QGYCLST" when parameters.Count >= 1 && parameters[0].Input.Length >= 4:
                 _spoolLists.Close(parameters[0].Input);
                 return ([], "closed the list");
+            // ACS's viewer reading a spooled file's pages as text (format GUIP0100; see SpoolPages): receiver,
+            // its length, *OPEN, *MORE or *CLOSE, a handle (10), the format, file name (10) and number,
+            // qualified job name, '1', first page and page count, error code, job system, date and time opened.
+            case "QGY/QGYRSPL" when parameters.Count >= 9 && parameters[0].Kind == ParameterKind.Output:
+            {
+                var option = Text(2, 10);
+                if (option == "*CLOSE") return (new(), "closed the spooled file");
+                var fileId = Padded(parameters[5].Input, 14);
+                var job = Padded(parameters[6].Input, 26);
+                var name = Ebcdic.Decode(fileId.AsSpan(0, 10)).TrimEnd();
+                var number = BinaryPrimitives.ReadInt32BigEndian(fileId.AsSpan(10));
+                var jobName = Ebcdic.Decode(job.AsSpan(0, 10)).TrimEnd();
+                var jobNumber = Ebcdic.Decode(job.AsSpan(20, 6)).TrimEnd();
+                var range = Padded(parameters[8].Input, 8);
+                var (first, count) = (BinaryPrimitives.ReadInt32BigEndian(range), BinaryPrimitives.ReadInt32BigEndian(range.AsSpan(4)));
+                var file = AllSpooledFiles().FirstOrDefault(f => f.Name == name && f.Number == number && f.JobNumber == jobNumber && f.JobName == jobName);
+                if (file is null) return (null, $"failed: no spooled file {name} #{number} in job {jobNumber}/{jobName}");
+                var length = Math.Min(parameters[0].MaxLength, BinaryPrimitives.ReadInt32BigEndian(Padded(parameters[1].Input, 4)));
+                var receiver = SpoolPages.Retrieve(file, first, count, length);
+                if (receiver is null) return (null, $"failed: {name} #{number} has no page {first} to show as text");
+                var returned = receiver.Length >= 12 ? BinaryPrimitives.ReadInt32BigEndian(receiver.AsSpan(8)) : 0;
+                return (new() { [0] = receiver }, $"{option}: {returned} page(s) of {name} #{number} from page {first}, {receiver.Length} of {BinaryPrimitives.ReadInt32BigEndian(receiver.AsSpan(4))} bytes");
+            }
             default:
                 return ([], "answered success with zeros");
         }

@@ -1,17 +1,28 @@
 namespace FakeIbmI.Tests;
 
-/// <summary>Libraries: each a SQLite database of its own, in a folder, with a folder of source to match.</summary>
+/// <summary>Libraries: each a schema of the database, with a folder of source to match.</summary>
 public class LibraryTests
 {
     private static string TempFolder() => Directory.CreateTempSubdirectory("fake-ibmi-libs").FullName;
 
     [Fact]
-    public void EachLibraryIsADatabaseFileThatComesBackWithItsMembersAndTables()
+    public void EachLibraryIsASchemaThatComesBackWithItsMembersAndTables()
     {
-        var folder = TempFolder();
+        // A database of the test's own, opened twice as a fake started twice would.
+        var server = new Npgsql.NpgsqlConnectionStringBuilder(Store.ScratchServer);
+        var name = "fakeibmi_lib_" + Guid.NewGuid().ToString("N")[..12];
+        void Admin(string sql)
+        {
+            using var admin = new Npgsql.NpgsqlConnection(server.ConnectionString);
+            admin.Open();
+            using var command = new Npgsql.NpgsqlCommand(sql, admin);
+            command.ExecuteNonQuery();
+        }
+        Admin($"CREATE DATABASE {name}");
+        var database = new Npgsql.NpgsqlConnectionStringBuilder(server.ConnectionString) { Database = name }.ConnectionString;
         try
         {
-            using (var machine = Machine.Open(folder))
+            using (var machine = Machine.Open(database))
             {
                 Assert.True(machine.Run("CRTLIB LIB(SALES)", new BatchJob("PRTUSER", CancellationToken.None)).Ok);
                 Assert.True(machine.Run("RUNSQL SQL('create table sales/orders (id int, total dec(7,2))')", new BatchJob("PRTUSER", CancellationToken.None)).Ok);
@@ -20,8 +31,7 @@ public class LibraryTests
                 Assert.Equal(["QGPL", "SALES"], machine.Store.Libraries());
             }
 
-            Assert.Equal(["QGPL.db", "SALES.db"], Directory.GetFiles(folder).Select(Path.GetFileName).Order());
-            using var again = Machine.Open(folder);
+            using var again = Machine.Open(database);
             Assert.Equal(["QGPL", "SALES"], again.Store.Libraries());
             Assert.Equal("SALES/QRPGLESRC(HELLO)", again.Store.FindMember(null, null, "HELLO")!.ToString());
             Assert.Null(again.Store.FindMember("QGPL", null, "HELLO"));
@@ -30,12 +40,9 @@ public class LibraryTests
         }
         finally
         {
-            SqliteClear();
-            Directory.Delete(folder, recursive: true);
+            Admin($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
         }
     }
-
-    private static void SqliteClear() => Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 
     [Fact]
     public void LibrariesKeepTheirTablesApartAndSqlSaysWhichByLibrary()
@@ -120,25 +127,13 @@ public class LibraryTests
     }
 
     [Fact]
-    public void ManyLibrariesCanBeMadeUpToWhatSqliteAttaches()
+    public void ManyLibrariesCanBeMade()
     {
         using var machine = Machine.Open();
-        var made = 0;
-        for (; made < 40; made++)
-        {
-            try
-            {
-                machine.Store.CreateLibrary($"LIB{made}");
-            }
-            catch (InvalidOperationException e)
-            {
-                Assert.Contains("at most", e.Message);
-                break;
-            }
-        }
-
-        Assert.InRange(made, 8, 39);
-        Assert.Equal(made + 1, machine.Store.Libraries().Count);
+        for (var i = 0; i < 40; i++) Assert.True(machine.Store.CreateLibrary($"LIB{i}"));
+        Assert.Equal(41, machine.Store.Libraries().Count);
+        Assert.True(machine.Store.DeleteLibrary("LIB7"));
+        Assert.Equal(40, machine.Store.Libraries().Count);
     }
 
     [Fact]

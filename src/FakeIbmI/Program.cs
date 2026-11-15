@@ -14,13 +14,15 @@
 //     FAKE_IBMI_USER / FAKE_IBMI_PASSWORD set the user every server signs on, and
 //     FAKE_IBMI_EXPIRED_USER / _PASSWORD and FAKE_IBMI_LOCKED_USER / _PASSWORD the user whose
 //     password has expired and the disabled one. See .env.example.
-// --database-dir names the folder of the libraries' SQLite databases (QGPL.db, MYLIB.db ...), which keep source
-//     members, programs, display files and the tables embedded SQL works on (default: in memory, gone when the fake stops).
-//     QGPL's also keeps the users and the spooled files.
+// --database is the PostgreSQL database's connection string (or FAKE_IBMI_DATABASE): each library is a schema of it,
+//     with its source members, programs, display files and the tables embedded SQL works on. QGPL's also keeps the users
+//     and the spooled files.
 // --source-dir reads a folder of source at start-up, with a folder for each library (MYLIB/QRPGLESRC/prog.rpgle;
 //     files directly in it go to QGPL): each member that's new or changed is saved, checked and created
 //     (.rpgle, .sqlrpgle, .dspf, .sql), and what the fake can't run is logged by line.
 // --check does that without creating anything or starting a server; exit code 3 when something isn't supported.
+// --web-port also runs the web source editor: sign on with a user profile to edit, upload and compile source.
+// --ifs-dir names the folder that is the integrated file system's root (default: a temporary one).
 // --bind listens on another address than loopback (0.0.0.0: every interface).
 // --trace logs each Telnet negotiation step, and each record's length (never its contents).
 
@@ -40,15 +42,26 @@ try
         throw new ArgumentException($"the source folder {options.SourceDir} doesn't exist (--source-dir, or FAKE_IBMI_SOURCE_DIR in the settings)");
     if (options.Check)
     {
-        using var scratch = Machine.Open();
+        // Checking runs the SQL members: on a database of its own, on the server --database names (or the scratch server).
+        using var scratch = new Machine(Store.Open(options.Database ?? Store.ScratchServer, temporary: true));
         var unsupported = scratch.Import(options.SourceDir!, Log, create: false);
-        Console.WriteLine(unsupported == 0 ? "source: everything is supported" : $"source: {unsupported} line{(unsupported == 1 ? "" : "s")} not supported");
+        Console.WriteLine(unsupported == 0 ? "source: everything is supported" : $"source: {unsupported} line{(unsupported == 1 ? "" : "s")} not supported or in error");
         return unsupported == 0 ? 0 : 3;
     }
     // Every server works on the same source, programs and tables.
-    using var machine = Machine.Open(options.DatabaseDir);
-    Console.WriteLine($"libraries: {string.Join(", ", machine.Store.Libraries())} ({(options.DatabaseDir is null ? "in memory: --database-dir keeps them in files" : $"databases in {options.DatabaseDir}")})");
+    // The IFS's root: --ifs-dir, or a folder beside the databases, or (in memory) a temporary one.
+    if (options.Database is null)
+        throw new ArgumentException("the fake needs a PostgreSQL database: --database \"Host=...;Database=...;Username=...;Password=...\", or FAKE_IBMI_DATABASE in the settings");
+    var ifsDir = options.IfsDir;
+    using var machine = Machine.Open(options.Database, ifsDir);
+    Console.WriteLine($"integrated file system: {machine.Ifs.Root}{(ifsDir is null ? " (temporary: --ifs-dir keeps it)" : "")}");
+    var database = new Npgsql.NpgsqlConnectionStringBuilder(options.Database);
+    Console.WriteLine($"libraries: {string.Join(", ", machine.Store.Libraries())} (PostgreSQL database {database.Database} on {database.Host})");
     // Every server checks sign-ons against the same users, kept in the database, so a password changed through one holds for all.
+    // SAVRSTLIB and SAVRSTOBJ sign on to the remote system as this user when the command names none.
+    machine.RemoteUser = settings.GetValueOrDefault("FAKE_IBMI_REMOTE_USER") is { Length: > 0 } remoteUser ? remoteUser.Trim().ToUpperInvariant() : null;
+    machine.RemotePassword = settings.GetValueOrDefault("FAKE_IBMI_REMOTE_PASSWORD") is { Length: > 0 } remotePassword ? remotePassword : null;
+    machine.Progress = Log;
     machine.InstallSystemSource(Log);
     var users = Users.Open(machine.Store, settings);
     Console.WriteLine($"users{(envFile is null ? "" : $" (settings from {envFile})")}: {string.Join(", ", users.All)}");
@@ -74,6 +87,11 @@ try
         ? await RemoteCommandServer.StartAsync(commandPort, Log, options.Bind, users, TlsOn(options.CommandTlsPort), machine)
         : null;
     if (command is not null) Console.WriteLine($"fake remote command server listening on port {command.Port}{TlsText(command.TlsPort)}");
+
+    await using var web = options.WebPort is { } webPort
+        ? await WebServer.StartAsync(webPort, Log, options.Bind, users, machine)
+        : null;
+    if (web is not null) Console.WriteLine($"fake web source editor listening on port {web.Port}: http://{(options.Bind.Equals(System.Net.IPAddress.Any) ? "localhost" : options.Bind.ToString())}:{web.Port}/");
 
     var services = new Dictionary<string, int>();
     if (command is not null) services["as-rmtcmd"] = command.Port;
@@ -113,7 +131,7 @@ catch (InvalidOperationException e)
     Console.Error.WriteLine($"fake IBM i: {e.Message}");
     return 2;
 }
-catch (Microsoft.Data.Sqlite.SqliteException e)
+catch (Npgsql.NpgsqlException e)
 {
     Console.Error.WriteLine($"fake IBM i can't use the database: {e.Message}");
     return 1;

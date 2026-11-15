@@ -274,6 +274,10 @@ public sealed class TelnetServer : IAsyncDisposable
         var screen = Screen.SignOn;
         var session = new SignOnSession();
         var buffer = new byte[4096];
+        string? terminal = null;
+        // The client's next record, and (while a program runs) its next screen: whichever comes first is handled.
+        Task<int>? reading = null;
+        Task<RunEvent>? programEvent = null;
 
         async Task SendAsync(byte[] bytes, string what)
         {
@@ -304,11 +308,12 @@ public sealed class TelnetServer : IAsyncDisposable
         {
             while (session.Job is { } job)
             {
-                var next = await job.NextAsync(_stop.Token);
+                var next = programEvent is not null ? await programEvent : await job.NextAsync(_stop.Token);
+                programEvent = null;
                 if (next.Screen is null)
                 {
                     session.Job = null;
-                    Log($"#{id} program ended{(next.Message is null ? "" : " in error")}");
+                    Log($"#{id} program ended{(next.Failed ? " in error" : "")}");
                     screen = session.Panel is null ? Screen.Main : Screen.Panel;
                     await SendAsync(Show(screen, next.Message, session), $"screen {screen}");
                     return false;
@@ -324,7 +329,19 @@ public sealed class TelnetServer : IAsyncDisposable
         {
         while (true)
         {
-            var count = await stream.ReadAsync(buffer, _stop.Token);
+            reading ??= stream.ReadAsync(buffer, _stop.Token).AsTask();
+            if (session.Job is { } waiting)
+            {
+                // A program that waits for the user with a time limit (WAITRCD) sends its next screen by itself.
+                programEvent ??= waiting.NextAsync(_stop.Token).AsTask();
+                if (await Task.WhenAny(reading, programEvent) == programEvent)
+                {
+                    await PumpAsync();
+                    continue;
+                }
+            }
+            var count = await reading;
+            reading = null;
             if (count == 0) return device;
             foreach (var e in decoder.Push(buffer.AsSpan(0, count)))
             {
@@ -404,7 +421,8 @@ public sealed class TelnetServer : IAsyncDisposable
                     case TelnetEvent.Subnegotiation { Option: TelnetOption.TerminalType } s
                         when s.Data.Length > 0 && s.Data[0] == 0 && !terminalType:
                         terminalType = true;
-                        Log($"#{id} terminal type {System.Text.Encoding.ASCII.GetString(s.Data, 1, s.Data.Length - 1)}");
+                        terminal = System.Text.Encoding.ASCII.GetString(s.Data, 1, s.Data.Length - 1);
+                        Log($"#{id} terminal type {terminal}");
                         await AskAsync(TelnetOption.EndOfRecord);
                         await OfferAsync(TelnetOption.EndOfRecord);
                         await AskAsync(TelnetOption.Binary);
@@ -454,6 +472,8 @@ public sealed class TelnetServer : IAsyncDisposable
                     return null;
                 }
                 Log($"#{id} session started on {device}");
+                // 3477 and 3180 displays show 27 x 132 as well as 24 x 80.
+                session.State = new JobState(device!, terminal is not null && (terminal.Contains("3477") || terminal.Contains("3180")));
                 await SendAsync(StartupRecord("I902", device!), "startup response I902");
                 await SendAsync(Show(Screen.SignOn, null, session), $"screen {Screen.SignOn}");
             }
@@ -570,6 +590,9 @@ public sealed class TelnetServer : IAsyncDisposable
 
         /// <summary>The program running, when one is.</summary>
         public InteractiveJob? Job { get; set; }
+
+        /// <summary>The job the session's commands and programs run in: its library list, overrides and display.</summary>
+        public JobState State { get; set; } = new();
     }
 
     /// <summary>
@@ -793,19 +816,19 @@ public sealed class TelnetServer : IAsyncDisposable
                 session.Panel = new EditorPanel(_machine, member, list, Log);
                 return (Screen.Panel, null);
             }
-            case "CALL":
-                // On its own thread: the program's screens and DSPLY's messages come through this session.
+            default:
+            {
+                // In the session's job, on its own thread: a program's screens and DSPLY's messages come through this session.
                 session.Panel = null;
+                session.State.Screen = null;
+                session.State.Messages.Clear();
                 session.Job = InteractiveJob.Start(session.User, job =>
                 {
                     var result = _machine.Run(text, job);
-                    return result.Ok ? null : result.Message;
-                }, _stop.Token);
+                    if (!result.Ok) throw new ProgramFailed(result.Message);
+                    return result.Message.Length > 0 ? result.Message : job.State.Messages.LastOrDefault();
+                }, _stop.Token, session.State);
                 return (Screen.Program, null);
-            default:
-            {
-                var result = _machine.Run(text, new BatchJob(session.User, _stop.Token));
-                return (Screen.Main, result.Message.Length == 0 ? null : result.Message);
             }
         }
     }

@@ -19,12 +19,39 @@ internal enum StatementKind
     Fixed,
 }
 
-internal sealed record SourceStatement(StatementKind Kind, string Text, int Line);
+/// <param name="Unended">The member ends before the statement's semicolon.</param>
+/// <summary>
+/// A statement of a member: its kind, text and first line. <see cref="Translated"/> is true for one
+/// the fixed-form translation made, which can use the fake's own operations (@MOVE, @CALL ...).
+/// </summary>
+internal sealed record SourceStatement(StatementKind Kind, string Text, int Line, bool Unended = false, bool Translated = false)
+{
+    /// <summary>A definition a fixed-form calculation makes (see <see cref="VarDecl.Calculated"/>).</summary>
+    public bool Calculated { get; init; }
+}
+
+/// <summary>
+/// What /COPY and /INCLUDE bring in. <see cref="Member"/> gives a member's source by library, file and
+/// member (the first two null when not given), or null when there's no such member. <see cref="Stream"/>
+/// gives a stream file's text and absolute path from its path, relative to the folder given (the folder of
+/// the file that includes it), or null when there's no such file. <see cref="Directory"/> is the folder
+/// of the source being compiled, when it's a stream file.
+/// </summary>
+internal sealed record RpgIncludes(
+    Func<string?, string?, string, string?> Member,
+    Func<string, string?, (string Text, string Path)?>? Stream = null,
+    string? Directory = null);
 
 /// <summary>Something the fake's RPG doesn't support. The message says what.</summary>
-internal sealed class RpgUnsupported(string message) : Exception(message);
+internal class RpgUnsupported(string message, Severity severity = Severity.Unsupported) : Exception(message)
+{
+    public Severity Severity { get; } = severity;
+}
 
-internal static class RpgSource
+/// <summary>Source that isn't RPG an IBM i's compiler takes. The message says what's wrong.</summary>
+internal sealed class RpgSyntaxError(string message) : RpgUnsupported(message, Severity.Error);
+
+internal static partial class RpgSource
 {
     /// <summary>
     /// The statements of a member. With **FREE on its first line, a line is all code. Without it, code
@@ -41,15 +68,61 @@ internal static class RpgSource
         for (var n = fullyFree ? 1 : 0; n < lines.Length; n++)
         {
             var line = lines[n];
+            // Compile-time data (** in columns 1 and 2) ends the code.
+            if (!fullyFree && !inString && line.StartsWith("**") && text.ToString().Trim().Length == 0)
+            {
+                statements.Add(new SourceStatement(StatementKind.Directive, line.Trim(), n + 1));
+                break;
+            }
             if (!fullyFree)
             {
                 if (line.Length >= 7 && line[6] == '*' && !inString) continue;
-                if (line.Length >= 6 && "HFDCIOPhfdciop".Contains(line[5]) && line[..5].All(c => c == ' ' || char.IsDigit(c)) && !inString)
+                // A // comment starting in column 7 is a comment line too.
+                if (line.Length >= 8 && line[6] == '/' && line[7] == '/' && !inString) continue;
+                // Fixed-form SQL: C/EXEC SQL, its C+ lines, and C/END-EXEC.
+                if (line.Length >= 15 && line[6] == '/' && !inString && text.ToString().Trim().Length == 0
+                    && line[7..].TrimStart().StartsWith("EXEC SQL", StringComparison.OrdinalIgnoreCase))
                 {
-                    statements.Add(new SourceStatement(StatementKind.Fixed, line.TrimEnd(), n + 1));
+                    var sql = new StringBuilder(line[7..Math.Min(line.Length, 80)].Trim()[8..].Trim());
+                    var start = n + 1;
+                    while (n + 1 < lines.Length)
+                    {
+                        var next = lines[n + 1];
+                        if (next.Length > 6 && next[6] == '*')
+                        {
+                            n++;
+                            continue;
+                        }
+                        if (next.Length > 6 && next[6] == '+')
+                        {
+                            sql.Append(' ').Append(next.Length > 7 ? next[7..Math.Min(next.Length, 80)].Trim() : "");
+                            n++;
+                            continue;
+                        }
+                        if (next.Length > 7 && next[6] == '/' && next[7..].TrimStart().StartsWith("END-EXEC", StringComparison.OrdinalIgnoreCase)) n++;
+                        break;
+                    }
+                    statements.Add(new SourceStatement(StatementKind.Sql, sql.ToString().Trim(), start));
                     continue;
                 }
-                line = line.Length > 7 ? line[7..Math.Min(line.Length, 80)] : "";
+                // A directive starts in column 7: /COPY, /FREE, /EXEC SQL and the like, whatever is in column 6.
+                if (line.Length > 7 && line[6] == '/' && char.IsLetter(line[7]) && !inString && text.ToString().Trim().Length == 0)
+                {
+                    statements.Add(new SourceStatement(StatementKind.Directive, line[6..Math.Min(line.Length, 80)].Trim(), n + 1));
+                    continue;
+                }
+                // Columns 1 to 5 are the sequence area, which the compiler ignores; column 6 is the spec letter.
+                if (line.Length >= 6 && "HFDCIOPhfdciop".Contains(line[5]) && !inString)
+                {
+                    // A line with only the spec letter is empty.
+                    if (line.Length > 6 && line[6..Math.Min(line.Length, 80)].Trim().Length > 0)
+                        statements.Add(new SourceStatement(StatementKind.Fixed, line.TrimEnd(), n + 1));
+                    continue;
+                }
+                // A // comment starting in column 80 has only its first / in the code columns.
+                var code = line.Length > 7 ? line[7..Math.Min(line.Length, 80)] : "";
+                if (line.Length > 80 && line[79] == '/' && line[80] == '/' && !code[..^1].Contains("//")) code = code[..^1];
+                line = code;
             }
             var trimmed = line.Trim();
             if (!inString && text.ToString().Trim().Length == 0)
@@ -113,19 +186,54 @@ internal static class RpgSource
                 text.Append('\n');
             }
         }
-        if (text.ToString().Trim().Length > 0) Add(statements, text, startLine);
+        if (text.ToString().Trim().Length > 0) Add(statements, text, startLine, unended: true);
         return statements;
     }
 
-    private static void Add(List<SourceStatement> statements, StringBuilder text, int line)
+    private static void Add(List<SourceStatement> statements, StringBuilder text, int line, bool unended = false)
     {
         var statement = text.ToString().Trim();
         text.Clear();
         if (statement.Length == 0) return;
         var words = statement.Split((char[]?)null, 3, StringSplitOptions.RemoveEmptyEntries);
         if (words.Length >= 2 && words[0].Equals("EXEC", StringComparison.OrdinalIgnoreCase) && words[1].Equals("SQL", StringComparison.OrdinalIgnoreCase))
-            statements.Add(new SourceStatement(StatementKind.Sql, words.Length > 2 ? words[2] : "", line));
-        else statements.Add(new SourceStatement(StatementKind.Code, statement, line));
+            statements.Add(new SourceStatement(StatementKind.Sql, words.Length > 2 ? words[2] : "", line, unended));
+        else statements.Add(new SourceStatement(StatementKind.Code, statement, line, unended));
+    }
+}
+
+internal static partial class RpgSource
+{
+    /// <summary>
+    /// The compile-time data after the code: each section's name (from **CTDATA name, or null for a
+    /// plain **) and its records. Sections are the arrays with CTDATA, in order when they have no name.
+    /// </summary>
+    public static List<(string? Name, List<string> Records)> CompileTimeData(string source)
+    {
+        var sections = new List<(string?, List<string>)>();
+        var lines = source.Replace("\r\n", "\n").Split('\n');
+        var fullyFree = lines.Length > 0 && lines[0].TrimEnd().Equals("**FREE", StringComparison.OrdinalIgnoreCase);
+        List<string>? current = null;
+        for (var n = fullyFree ? 1 : 0; n < lines.Length; n++)
+        {
+            var line = lines[n];
+            if (line.StartsWith("**") && !(n == 0 && fullyFree))
+            {
+                var words = line[2..].Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (words.Length > 0 && words[0].Equals("FREE", StringComparison.OrdinalIgnoreCase) && current is null) continue;
+                var name = words.Length >= 2 && words[0].ToUpperInvariant() is "CTDATA" ? words[1].ToUpperInvariant() : null;
+                current = [];
+                sections.Add((name, current));
+                continue;
+            }
+            current?.Add(line);
+        }
+        // A trailing empty line is the file's end, not a record.
+        foreach (var (_, records) in sections)
+        {
+            while (records.Count > 0 && records[^1].Length == 0) records.RemoveAt(records.Count - 1);
+        }
+        return sections;
     }
 }
 
@@ -172,6 +280,27 @@ internal static class RpgLexer
             {
                 tokens.Add(new Token(TokenKind.String, "", ReadString(text, ref i)));
             }
+            else if ((c is 'd' or 'D' or 't' or 'T' or 'z' or 'Z') && i + 1 < text.Length && text[i + 1] == '\''
+                     && (i == 0 || !IsNameChar(text[i - 1])))
+            {
+                // Typed literals: d'2024-01-31', t'12.00.00', z'2024-01-31-12.00.00.000000'.
+                i++;
+                var literal = ReadString(text, ref i);
+                try
+                {
+                    object value = char.ToUpperInvariant(c) switch
+                    {
+                        'D' => Values.ParseDate(literal, "*ISO"),
+                        'T' => Values.ParseTime(literal),
+                        _ => Values.ParseTimestamp(literal),
+                    };
+                    tokens.Add(new Token(TokenKind.String, "", value));
+                }
+                catch (RpgError)
+                {
+                    throw new RpgSyntaxError($"{c}'{literal}' isn't a valid date, time or timestamp");
+                }
+            }
             else if ((c is 'x' or 'X') && i + 1 < text.Length && text[i + 1] == '\'')
             {
                 i++;
@@ -182,16 +311,31 @@ internal static class RpgLexer
                 }
                 catch (FormatException)
                 {
-                    throw new RpgUnsupported($"x'{hex}' isn't a hexadecimal literal");
+                    throw new RpgSyntaxError($"x'{hex}' isn't a hexadecimal literal");
                 }
             }
             else if (char.IsDigit(c) || c == '.' && i + 1 < text.Length && char.IsDigit(text[i + 1]))
             {
                 var start = i;
-                while (i < text.Length && (char.IsDigit(text[i]) || text[i] == '.' && i + 1 < text.Length && char.IsDigit(text[i + 1]))) i++;
-                if (i < text.Length && text[i] == '.') i++;
+                var point = false;
+                while (i < text.Length && (char.IsDigit(text[i]) || text[i] == '.' && !point && i + 1 < text.Length && char.IsDigit(text[i + 1])))
+                {
+                    if (text[i] == '.') point = true;
+                    i++;
+                }
+                if (i < text.Length && text[i] == '.' && !point) i++;
                 var number = text[start..i];
-                if (i < text.Length && (char.IsLetter(text[i]) || text[i] == '_')) throw new RpgUnsupported($"{number}{text[i]}... isn't a number or a name");
+                if (i + 1 < text.Length && text[i] is 'e' or 'E' && (char.IsDigit(text[i + 1]) || text[i + 1] is '+' or '-'))
+                {
+                    // A floating-point literal: 1.5E3.
+                    var exponent = ++i;
+                    if (text[i] is '+' or '-') i++;
+                    while (i < text.Length && char.IsDigit(text[i])) i++;
+                    var literal = number + "E" + text[exponent..i];
+                    tokens.Add(new Token(TokenKind.Number, literal, double.Parse(literal, CultureInfo.InvariantCulture)));
+                    continue;
+                }
+                if (i < text.Length && (char.IsLetter(text[i]) || text[i] == '_')) throw new RpgSyntaxError($"{number}{text[i]}... isn't a number or a name");
                 tokens.Add(new Token(TokenKind.Number, number, decimal.Parse(number.TrimEnd('.'), CultureInfo.InvariantCulture)));
             }
             else if (IsNameStart(c))
@@ -219,14 +363,22 @@ internal static class RpgLexer
             {
                 var start = i++;
                 while (i < text.Length && IsNameChar(text[i])) i++;
+                // A date or time format can end with its separator: *USA/, *ISO-, *DMY. or *HMS& (a blank).
+                if (i < text.Length && text[i] is '/' or '-' or '.' or ',' or '&' && DateTimeFormats.Contains(text[start..i].ToUpperInvariant())) i++;
+                // *HMS: (a colon, which is otherwise the separator of arguments) only where nothing follows it: TIMFMT(*HMS:).
+                else if (i + 1 < text.Length && text[i] == ':' && text[i + 1] == ')' && text[start..i].ToUpperInvariant() is "*HMS" or "*JIS" or "*ISO" or "*EUR") i++;
                 tokens.Add(new Token(TokenKind.Special, text[start..i].ToUpperInvariant()));
             }
             else
             {
                 var two = i + 1 < text.Length ? text.Substring(i, 2) : "";
-                if (two is "<>" or "<=" or ">=" or "+=" or "-=" or "*=" or "/=" or "**")
+                if (i + 2 < text.Length && text.Substring(i, 3) == "**=")
                 {
-                    // **= is rare enough to leave out.
+                    tokens.Add(new Token(TokenKind.Op, "**="));
+                    i += 3;
+                }
+                else if (two is "<>" or "<=" or ">=" or "+=" or "-=" or "*=" or "/=" or "**")
+                {
                     tokens.Add(new Token(TokenKind.Op, two));
                     i += 2;
                 }
@@ -237,7 +389,7 @@ internal static class RpgLexer
                 }
                 else
                 {
-                    throw new RpgUnsupported($"the character {c} isn't expected here");
+                    throw new RpgSyntaxError($"the character {c} isn't expected here");
                 }
             }
         }
@@ -248,14 +400,21 @@ internal static class RpgLexer
     private static bool SpecialFollows(List<Token> tokens)
     {
         if (tokens.Count == 0) return true;
+        // After an operation code's extender: TEST(DE) *ISO.
+        if (tokens is [{ Kind: TokenKind.Name }, { Text: "(" }, { Kind: TokenKind.Name }, { Text: ")" }]) return true;
         var previous = tokens[^1];
         return previous.Kind switch
         {
             TokenKind.Op => previous.Text != ")",
             TokenKind.Name => tokens.Count == 1 || BeforeSpecial.Contains(previous.Text),
+            // IN *LOCK *DTAARA, CLEAR *NOKEY *ALL: a special word after the operation's own.
+            TokenKind.Special => tokens.Count == 2 && tokens[0].Kind == TokenKind.Name,
             _ => false,
         };
     }
+
+    private static readonly HashSet<string> DateTimeFormats =
+        ["*MDY", "*DMY", "*YMD", "*JUL", "*ISO", "*USA", "*EUR", "*JIS", "*CYMD", "*CMDY", "*CDMY", "*LONGJUL", "*HMS"];
 
     private static bool IsNameStart(char c) => char.IsLetter(c) || c is '_' or '#' or '@' or '$';
 
@@ -267,7 +426,7 @@ internal static class RpgLexer
         i++;
         while (true)
         {
-            if (i >= text.Length) throw new RpgUnsupported("a literal isn't closed");
+            if (i >= text.Length) throw new RpgSyntaxError("a literal isn't closed");
             if (text[i] == '\'')
             {
                 if (i + 1 < text.Length && text[i + 1] == '\'')
