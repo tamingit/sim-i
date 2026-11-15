@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fake IBM i Source</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #5d6577; --line: #dde1e8; --accent: #2457c5;
+    --accent-ink: #ffffff; --error: #c62f2f; --error-bg: #fdecec; --warn: #a76a00; --warn-bg: #fff4dc; --ok: #23824a;
+    --ok-bg: #e5f5ec; --code-bg: #fbfbfc; --gutter: #eef0f4; --select: #dbe6ff;
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1a1e26; --ink: #e5e8ef; --muted: #9aa3b5; --line: #2c3240; --accent: #6f9bff;
+      --accent-ink: #0b1020; --error: #ff7a7a; --error-bg: #3a1d20; --warn: #f2b84b; --warn-bg: #3a2d14; --ok: #5fd08f;
+      --ok-bg: #173226; --code-bg: #161a21; --gutter: #1f242e; --select: #263a66;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+  button, input, select { font: inherit; color: inherit; }
+  button { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.danger { color: var(--error); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  input:focus, select:focus, button:focus-visible, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hidden { display: none !important; }
+
+  /* Sign-on */
+  #signon { min-height: 100%; display: grid; place-items: center; padding: 16px; }
+  #signon form { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 24px; width: min(360px, 100%); display: grid; gap: 12px; }
+  #signon h1 { margin: 0 0 4px; font-size: 20px; }
+  #signon label { display: grid; gap: 4px; color: var(--muted); font-size: 13px; }
+  .message { color: var(--error); min-height: 1.2em; font-size: 13px; }
+
+  /* Layout */
+  #app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+  header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  header .who { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); display: grid; grid-template-rows: auto auto 1fr; min-height: 0; }
+  aside .tools { padding: 10px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
+  aside .tools .row { display: flex; gap: 8px; }
+  aside .tools .row > * { flex: 1; }
+  #drop { border: 2px dashed var(--line); border-radius: 8px; padding: 10px; text-align: center; color: var(--muted); font-size: 13px; }
+  #drop.over { border-color: var(--accent); color: var(--accent); }
+  #drop .links { display: flex; gap: 8px; justify-content: center; margin-top: 6px; }
+  #tree { overflow: auto; padding: 6px 0; }
+  .lib { font-weight: 600; padding: 6px 12px 2px; font-size: 13px; }
+  .srcf { color: var(--muted); padding: 2px 12px 2px 20px; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+  .mbr { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; border-radius: 0; padding: 3px 12px 3px 30px; background: none; font-family: var(--mono); font-size: 13px; }
+  .mbr:hover { background: var(--gutter); }
+  .mbr.current { background: var(--select); }
+  .mbr .type { margin-left: auto; color: var(--muted); font-size: 11px; font-family: var(--sans); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ok); }
+  .dot.error { background: var(--error); }
+  .dot.warning { background: var(--warn); }
+
+  /* Editor */
+  section#work { display: grid; grid-template-rows: auto 1fr auto; min-width: 0; min-height: 0; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .bar .name { display: flex; gap: 6px; align-items: center; font-family: var(--mono); }
+  .bar .name input { width: 11ch; text-transform: uppercase; font-family: var(--mono); }
+  .bar .spacer { flex: 1; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.error { background: var(--error-bg); color: var(--error); }
+  .badge.warning, .badge.unsupported { background: var(--warn-bg); color: var(--warn); }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.info { background: var(--gutter); color: var(--muted); }
+  #editor { display: grid; grid-template-columns: auto 1fr; min-height: 0; background: var(--code-bg); overflow: hidden; }
+  #gutter { margin: 0; padding: 10px 8px 10px 12px; background: var(--gutter); color: var(--muted); font: 13px/20px var(--mono); text-align: right; overflow: hidden; user-select: none; white-space: pre; }
+  #gutter .e { color: var(--error); font-weight: 700; }
+  #gutter .w { color: var(--warn); font-weight: 700; }
+  #source { margin: 0; padding: 10px 12px; border: 0; resize: none; background: transparent; color: var(--ink); font: 13px/20px var(--mono); white-space: pre; overflow: auto; tab-size: 4; }
+  #empty { display: grid; place-items: center; color: var(--muted); padding: 32px; text-align: center; }
+  #findings { max-height: 32vh; overflow: auto; border-top: 1px solid var(--line); background: var(--panel); }
+  #findings h2, #results h2 { font-size: 13px; margin: 0; padding: 8px 16px; color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .finding { display: grid; grid-template-columns: 90px 64px 1fr; gap: 8px; width: 100%; text-align: left; border: 0; border-radius: 0; padding: 4px 16px; background: none; }
+  .finding:hover { background: var(--gutter); }
+  .finding .line { font-family: var(--mono); color: var(--muted); }
+  #results { border-top: 1px solid var(--line); background: var(--panel); max-height: 40vh; overflow: auto; }
+  .result { padding: 6px 16px; border-bottom: 1px solid var(--line); }
+  .result .head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .result .path { font-family: var(--mono); }
+  .result .msg { color: var(--muted); font-size: 13px; }
+  .result ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
+  .result li.error { color: var(--error); }
+  .result li.warning, .result li.unsupported { color: var(--warn); }
+  .result button.link { border: 0; padding: 0; background: none; color: var(--accent); }
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 45vh; }
+  }
+</style>
+</head>
+<body>
+<div id="signon">
+  <form id="signonForm">
+    <h1>Fake IBM i source</h1>
+    <div style="color:var(--muted);font-size:13px">Sign on with a user profile of the fake system.</div>
+    <label>User <input id="user" autocomplete="username" required maxlength="10" autofocus></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <div class="message" id="signonMessage"></div>
+    <button class="primary" type="submit">Sign on</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>Fake IBM i source</h1>
+    <span class="who" id="who"></span>
+    <button id="signoff">Sign off</button>
+  </header>
+  <main>
+    <aside>
+      <div class="tools">
+        <div class="row">
+          <button id="newMember" title="Start a new source member">New member</button>
+          <button id="refresh" title="Reload the list of members">Refresh</button>
+        </div>
+        <div id="drop">
+          Drop source files or a library folder here
+          <div class="links">
+            <label><select id="uploadLibrary" title="Library for loose files"></select></label>
+            <button id="pickFiles">Files…</button>
+            <button id="pickFolder">Folder…</button>
+          </div>
+          <input id="files" type="file" multiple class="hidden" accept=".rpgle,.sqlrpgle,.rpgleinc,.dspf,.prtf,.pf,.lf,.sql,.clle,.clp,.cmd">
+          <input id="folder" type="file" multiple webkitdirectory class="hidden">
+        </div>
+      </div>
+      <div class="tools" style="border-bottom:0;padding-bottom:0"><input id="filter" placeholder="Filter members" aria-label="Filter members"></div>
+      <div id="tree" role="tree"></div>
+    </aside>
+    <section id="work">
+      <div class="bar">
+        <div class="name">
+          <input id="library" aria-label="Library" placeholder="LIBRARY">/
+          <input id="file" aria-label="Source file" placeholder="QRPGLESRC">(<input id="name" aria-label="Member" placeholder="MEMBER">)
+        </div>
+        <select id="type" aria-label="Source type">
+          <option>RPGLE</option><option>SQLRPGLE</option><option>RPGLEINC</option><option>DSPF</option><option>PRTF</option>
+          <option>PF</option><option>LF</option><option>SQL</option><option>CLLE</option><option>CMD</option>
+        </select>
+        <span id="status"></span>
+        <span class="spacer"></span>
+        <button class="danger" id="delete" disabled>Delete</button>
+        <button class="primary" id="save" title="Save, check and compile (Ctrl+S)">Save &amp; compile</button>
+      </div>
+      <div id="editor">
+        <pre id="gutter" aria-hidden="true">1</pre>
+        <textarea id="source" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Source"></textarea>
+      </div>
+      <div>
+        <div id="findings" class="hidden"><h2 id="findingsTitle">Findings</h2><div id="findingList"></div></div>
+        <div id="results" class="hidden"><h2>Upload results <button class="link" id="closeResults" style="float:right;border:0;background:none;color:var(--accent);padding:0">Close</button></h2><div id="resultList"></div></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = { members: [], current: null, findings: [], user: null };
+
+async function api(method, url, body, isForm) {
+  const options = { method, headers: { "X-Fake-IBMi": "1" }, credentials: "same-origin" };
+  if (body !== undefined) {
+    if (isForm) options.body = body;
+    else { options.body = JSON.stringify(body); options.headers["Content-Type"] = "application/json"; }
+  }
+  const response = await fetch(url, options);
+  if (response.status === 401 && url !== "/api/signon") { showSignon(); throw new Error("Sign on again."); }
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) throw new Error((data && data.message) || response.statusText);
+  return data;
+}
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) if (c !== null && c !== undefined) node.append(c);
+  return node;
+}
+
+function showSignon() { $("app").classList.add("hidden"); $("signon").classList.remove("hidden"); $("user").focus(); }
+
+async function start(me) {
+  state.user = me.user;
+  $("who").textContent = `${me.user} · ${me.library}`;
+  $("signon").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  const libs = me.libraries || [me.library];
+  $("uploadLibrary").replaceChildren(...libs.map(l => el("option", { value: l }, l)));
+  $("uploadLibrary").value = me.library;
+  newMember(me.library);
+  await loadMembers();
+}
+
+$("signonForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("signonMessage").textContent = "";
+  try {
+    await api("POST", "/api/signon", { user: $("user").value, password: $("password").value });
+    $("password").value = "";
+    start(await api("GET", "/api/me"));
+  } catch (err) { $("signonMessage").textContent = err.message; }
+});
+
+$("signoff").addEventListener("click", async () => { try { await api("POST", "/api/signoff"); } finally { showSignon(); } });
+
+// ---- the list of members ----
+
+async function loadMembers() {
+  state.members = await api("GET", "/api/members");
+  drawTree();
+}
+
+function drawTree() {
+  const filter = $("filter").value.trim().toUpperCase();
+  const tree = $("tree");
+  tree.replaceChildren();
+  let lastLib = null, lastFile = null;
+  for (const m of state.members) {
+    if (filter && !`${m.library}/${m.file}(${m.name}) ${m.type}`.includes(filter)) continue;
+    if (m.library !== lastLib) { tree.append(el("div", { class: "lib" }, m.library)); lastLib = m.library; lastFile = null; }
+    if (m.file !== lastFile) { tree.append(el("div", { class: "srcf" }, m.file)); lastFile = m.file; }
+    const current = state.current && state.current.library === m.library && state.current.file === m.file && state.current.name === m.name;
+    const title = m.status === "error" ? `${m.errors} error(s)` : m.status === "warning" ? `${m.warnings} warning(s)` : "No problems";
+    tree.append(el("button", { class: "mbr" + (current ? " current" : ""), title, onclick: () => openMember(m.library, m.file, m.name) },
+      el("span", { class: "dot " + m.status }), m.name, el("span", { class: "type" }, m.type)));
+  }
+  if (!tree.childElementCount) tree.append(el("div", { class: "srcf", style: "text-transform:none" }, state.members.length ? "Nothing matches." : "No members yet: upload some."));
+}
+$("filter").addEventListener("input", drawTree);
+$("refresh").addEventListener("click", loadMembers);
+
+// ---- the editor ----
+
+function setSource(text) { $("source").value = text; drawGutter(); }
+
+function drawGutter() {
+  const lines = $("source").value.split("\n").length;
+  const marks = new Map();
+  for (const f of state.findings) {
+    if (f.line <= 0) continue;
+    const kind = f.severity === "error" ? "e" : (f.severity === "unsupported" || f.severity === "warning") ? "w" : null;
+    if (kind && marks.get(f.line) !== "e") marks.set(f.line, kind);
+  }
+  const gutter = $("gutter");
+  gutter.replaceChildren();
+  for (let i = 1; i <= lines; i++) {
+    const kind = marks.get(i);
+    gutter.append(kind ? el("span", { class: kind }, (kind === "e" ? "✖ " : "▲ ") + i) : String(i));
+    gutter.append("\n");
+  }
+  gutter.scrollTop = $("source").scrollTop;
+}
+$("source").addEventListener("input", drawGutter);
+$("source").addEventListener("scroll", () => { $("gutter").scrollTop = $("source").scrollTop; });
+$("source").addEventListener("keydown", e => {
+  if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "  "); }
+});
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && !$("app").classList.contains("hidden")) { e.preventDefault(); save(); }
+});
+
+function setStatus(status, text) {
+  $("status").replaceChildren(status ? el("span", { class: "badge " + status }, text || status) : "");
+}
+
+function showFindings(findings, title) {
+  state.findings = findings || [];
+  const list = $("findingList");
+  list.replaceChildren(...state.findings.filter(f => f.severity !== "info" || true).map(f => el("button", { class: "finding", onclick: () => goToLine(f.line) },
+    el("span", {}, el("span", { class: "badge " + f.severity }, f.severity === "unsupported" ? "warning" : f.severity)),
+    el("span", { class: "line" }, f.line > 0 ? "line " + f.line : "member"),
+    el("span", {}, (f.severity === "unsupported" ? "Not supported: " : "") + f.message))));
+  $("findingsTitle").textContent = title || (state.findings.length ? `Findings (${state.findings.length})` : "Findings");
+  $("findings").classList.toggle("hidden", !state.findings.length);
+  drawGutter();
+}
+
+function goToLine(line) {
+  if (line <= 0) return;
+  const text = $("source").value;
+  let start = 0;
+  for (let i = 1; i < line && start >= 0; i++) start = text.indexOf("\n", start) + 1;
+  const end = text.indexOf("\n", start);
+  const source = $("source");
+  source.focus();
+  source.setSelectionRange(start, end < 0 ? text.length : end);
+  source.scrollTop = Math.max(0, (line - 5) * 20);
+}
+
+function newMember(library) {
+  state.current = null;
+  $("library").value = library || (state.user ? $("uploadLibrary").value : "");
+  $("file").value = "QRPGLESRC";
+  $("name").value = "";
+  $("type").value = "RPGLE";
+  $("delete").disabled = true;
+  setStatus(null);
+  showFindings([]);
+  setSource("**FREE\n");
+  drawTree();
+  $("name").focus();
+}
+$("newMember").addEventListener("click", () => newMember($("uploadLibrary").value));
+$("type").addEventListener("change", () => {
+  const defaults = { RPGLE: "QRPGLESRC", SQLRPGLE: "QRPGLESRC", RPGLEINC: "QRPGLESRC", DSPF: "QDDSSRC", PRTF: "QDDSSRC", PF: "QDDSSRC", LF: "QDDSSRC", SQL: "QSQLSRC", CLLE: "QCLLESRC", CMD: "QCMDSRC" };
+  if (!state.current) $("file").value = defaults[$("type").value];
+});
+
+async function openMember(library, file, name) {
+  try {
+    const m = await api("GET", `/api/member?library=${encodeURIComponent(library)}&file=${encodeURIComponent(file)}&name=${encodeURIComponent(name)}`);
+    state.current = { library: m.library, file: m.file, name: m.name };
+    $("library").value = m.library; $("file").value = m.file; $("name").value = m.name; $("type").value = m.type;
+    $("delete").disabled = false;
+    setSource(m.source);
+    showFindings(m.diagnostics);
+    setStatus(m.status, m.status === "ok" ? "OK" : m.status === "error" ? "Errors" : "Warnings");
+    drawTree();
+  } catch (err) { alert(err.message); }
+}
+
+async function save() {
+  const body = { library: $("library").value, file: $("file").value, name: $("name").value, type: $("type").value, source: $("source").value };
+  if (!body.name.trim()) { $("name").focus(); return; }
+  $("save").disabled = true;
+  setStatus("info", "Compiling…");
+  try {
+    const built = await api("PUT", "/api/member", body);
+    state.current = { library: built.library, file: built.file, name: built.name };
+    $("delete").disabled = false;
+    showFindings(built.diagnostics);
+    setStatus(built.status, built.message);
+    await loadMembers();
+  } catch (err) {
+    setStatus("error", err.message);
+  } finally { $("save").disabled = false; }
+}
+$("save").addEventListener("click", save);
+
+$("delete").addEventListener("click", async () => {
+  const c = state.current;
+  if (!c || !confirm(`Delete ${c.library}/${c.file}(${c.name})? Objects made from it stay.`)) return;
+  try {
+    await api("DELETE", `/api/member?library=${encodeURIComponent(c.library)}&file=${encodeURIComponent(c.file)}&name=${encodeURIComponent(c.name)}`);
+    newMember(c.library);
+    await loadMembers();
+  } catch (err) { alert(err.message); }
+});
+
+// ---- uploads ----
+
+async function upload(fileList) {
+  const files = [...fileList];
+  if (!files.length) return;
+  const form = new FormData();
+  form.append("library", $("uploadLibrary").value);
+  for (const f of files) form.append("files", f, f.webkitRelativePath || f.name);
+  $("results").classList.remove("hidden");
+  $("resultList").replaceChildren(el("div", { class: "result msg" }, `Uploading and compiling ${files.length} file(s)…`));
+  try {
+    const results = await api("POST", "/api/upload", form, true);
+    const order = { error: 0, warning: 1, ok: 2 };
+    results.sort((a, b) => order[a.status] - order[b.status]);
+    const counts = results.reduce((c, r) => (c[r.status] = (c[r.status] || 0) + 1, c), {});
+    $("resultList").replaceChildren(
+      el("div", { class: "result" }, `${results.length} file(s): `, el("span", { class: "badge error" }, `${counts.error || 0} error`), " ",
+        el("span", { class: "badge warning" }, `${counts.warning || 0} warning`), " ", el("span", { class: "badge ok" }, `${counts.ok || 0} ok`)),
+      ...results.map(r => el("div", { class: "result" },
+        el("div", { class: "head" }, el("span", { class: "badge " + r.status }, r.status === "error" ? "Error" : r.status === "warning" ? "Warning" : "OK"),
+          el("span", { class: "path" }, r.path), r.member ? el("button", { class: "link", onclick: () => openMember(r.library, r.file, r.name) }, r.member) : null),
+        el("div", { class: "msg" }, r.message || ""),
+        r.diagnostics && r.diagnostics.length ? el("ul", {}, ...r.diagnostics.map(d =>
+          el("li", { class: d.severity }, `${d.line > 0 ? "line " + d.line + ": " : ""}${d.severity === "unsupported" ? "not supported: " : d.severity === "error" ? "error: " : "warning: "}${d.message}`))) : null)));
+    await loadMembers();
+  } catch (err) {
+    $("resultList").replaceChildren(el("div", { class: "result" }, el("span", { class: "badge error" }, "Error"), " ", err.message));
+  }
+}
+$("pickFiles").addEventListener("click", () => $("files").click());
+$("pickFolder").addEventListener("click", () => $("folder").click());
+$("files").addEventListener("change", e => { upload(e.target.files); e.target.value = ""; });
+$("folder").addEventListener("change", e => { upload(e.target.files); e.target.value = ""; });
+$("closeResults").addEventListener("click", () => $("results").classList.add("hidden"));
+const drop = $("drop");
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", async e => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  // A dropped folder: read its files with their paths.
+  const items = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (items.some(i => i.isDirectory)) {
+    const files = [];
+    const walk = (entry, path) => new Promise(resolve => {
+      if (entry.isFile) entry.file(f => { files.push(new File([f], f.name, { type: f.type })); files[files.length - 1].relative = path + f.name; resolve(); });
+      else {
+        const reader = entry.createReader();
+        const all = [];
+        const more = () => reader.readEntries(async batch => {
+          if (!batch.length) { for (const child of all) await walk(child, path + entry.name + "/"); resolve(); }
+          else { all.push(...batch); more(); }
+        });
+        more();
+      }
+    });
+    for (const item of items) await walk(item, "");
+    const form = files.map(f => Object.defineProperty(f, "webkitRelativePath", { value: f.relative }));
+    upload(form);
+  } else upload(e.dataTransfer.files);
+});
+
+// ---- start ----
+api("GET", "/api/me").then(start).catch(() => showSignon());
+</script>
+</body>
+</html>

@@ -16,10 +16,16 @@
   <ItemGroup>
     <!-- The source of the fake's own programs (user maintenance), put in QGPL at start-up. -->
     <EmbeddedResource Include="System\*" LogicalName="System/%(Filename)%(Extension)" />
+    <!-- The web source editor's page. -->
+    <EmbeddedResource Include="Web\*" LogicalName="Web/%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
 </Project>

@@ -166,7 +166,7 @@ public class RemoteCommandServerTests
         Assert.Equal(0x0400, await RunAsync("CRTBNDRPG PGM(QGPL/NOSRC)"));
         // Not the machine's: an IBM program, and a command it doesn't have.
         Assert.Equal(0, await RunAsync("CALL PGM(QSYS/QCMDEXC) PARM('x' 1)"));
-        Assert.Equal(0, await RunAsync("CHGJOB CCSID(37)"));
+        Assert.Equal(0, await RunAsync("STRTCPSVR SERVER(*HTTP)"));
 
         Assert.Single(machine.Store.Columns("T"));
         lock (lines)
@@ -174,7 +174,7 @@ public class RemoteCommandServerTests
             Assert.Contains(lines, l => l.Contains("command CALL: ran (DSPLY showed 1 message)"));
             Assert.Contains(lines, l => l.Contains("command CALL: failed: ADDER takes 5 parameters, not 6"));
             Assert.Contains(lines, l => l.Contains("command RUNSQL: failed") && !l.Contains("already exists"));
-            Assert.Contains(lines, l => l.Contains("command CHGJOB: ran nothing, answered success"));
+            Assert.Contains(lines, l => l.Contains("command STRTCPSVR: ran nothing, answered success"));
         }
     }
 
@@ -262,6 +262,120 @@ public class RemoteCommandServerTests
 
         await client.CallAsync("QGYCLST", "QSYS", (4, 11, handle), (8, 11, []));
         Assert.Equal(0, BinaryPrimitives.ReadInt32BigEndian(await OpenAsync("NOBODY")));
+        // ACS's printer output asks for *CURRENT: the user signed on to this server.
+        Assert.Equal(3, BinaryPrimitives.ReadInt32BigEndian(await OpenAsync("*CURRENT")));
+    }
+
+    [Theory]
+    [InlineData("OSPL0100", 196)]
+    [InlineData("OSPL0200", 236)]
+    [InlineData("OSPL0400", 136)]
+    public async Task TheOpenListOfSpooledFilesAnswersEachFormatAsARealSystemLaysItOut(string format, int length)
+    {
+        await using var server = await RemoteCommandServer.StartAsync();
+        await using var client = await Client.SignOnAsync(server.Port, "PRTUSER", "Secret12");
+
+        var filter = new byte[92];
+        Array.Fill(filter, (byte)0x40);
+        BinaryPrimitives.WriteInt32BigEndian(filter, 1);
+        Ebcdic.Encode("PRTUSER".PadRight(10)).CopyTo(filter, 4);
+        var opened = await client.CallAsync("QGYOLSPL", "QSYS",
+            (0, 22, []), (4, 11, [0, 0, 0, 0]), (80, 22, []), (4, 11, [0xFF, 0xFF, 0xFF, 0xFF]), (4, 11, [0, 0, 0, 0]),
+            (92, 11, filter), (26, 11, Ebcdic.Encode("".PadRight(26))), (8, 11, Ebcdic.Encode(format)), (8, 11, []));
+        var information = Parameters(opened).Single(p => p.Length == 80).Data;
+        Assert.Equal(3, BinaryPrimitives.ReadInt32BigEndian(information));
+        Assert.Equal(length, BinaryPrimitives.ReadInt32BigEndian(information.AsSpan(12)));
+
+        var got = await client.CallAsync("QGYGTLE", "QSYS",
+            (length * 3, 22, []), (4, 11, BigEndian(length * 3)), (4, 11, information[8..12]), (80, 22, []), (4, 11, [0, 0, 0, 3]),
+            (4, 11, [0, 0, 0, 1]), (8, 11, []));
+        var outputs = Parameters(got);
+        var receiver = outputs[0].Data;
+        Assert.Equal(3, BinaryPrimitives.ReadInt32BigEndian(outputs[1].Data.AsSpan(4)));
+        var second = receiver.AsSpan(length, length);
+
+        var local = new DateTime(2026, 10, 12, 9, 35, 0, DateTimeKind.Local).ToUniversalTime();
+        var (utcDate, utcTime) = ($"1{local:yyMMdd}", local.ToString("HHmmss"));
+        if (format == "OSPL0400")
+        {
+            Assert.Equal("QPADEV0001PRTUSER   123456QPRTAFP   ", Ebcdic.Decode(second[..36]));
+            Assert.Equal(utcDate + utcTime, Ebcdic.Decode(second.Slice(44, 13)));
+            Assert.Equal(4096, BinaryPrimitives.ReadInt32BigEndian(second[116..]));
+            return;
+        }
+        Assert.Equal("QPRTAFP   QPADEV0001PRTUSER   123456", Ebcdic.Decode(second[..36]));
+        Assert.Equal(2, BinaryPrimitives.ReadInt32BigEndian(second[36..]));
+        Assert.Equal("QPRINT    QUSRSYS   ", Ebcdic.Decode(second.Slice(52, 20)));
+        Assert.Equal("*READY    *STD       5", Ebcdic.Decode(second.Slice(82, 22)));
+        Assert.Equal("PRINTER   ", Ebcdic.Decode(second.Slice(136, 10)));
+        var extension = BinaryPrimitives.ReadInt32BigEndian(second[148..]);
+        Assert.Equal(format == "OSPL0100" ? 160 : 200, extension);
+        Assert.Equal(36, BinaryPrimitives.ReadInt32BigEndian(second[152..]));
+        Assert.Equal("FAKEIBMI1261012093500" + utcDate + utcTime, Ebcdic.Decode(second.Slice(extension, 34)));
+        if (format == "OSPL0200")
+            Assert.Equal("1261012093500" + "3" + "".PadRight(10) + utcDate + utcTime, Ebcdic.Decode(second.Slice(160, 37)));
+    }
+
+    [Fact]
+    public async Task ACSsViewerGetsASpooledFilesPagesAsTextLines()
+    {
+        await using var server = await RemoteCommandServer.StartAsync();
+        await using var client = await Client.SignOnAsync(server.Port, "PRTUSER", "Secret12");
+
+        // QGY/QGYRSPL as ACS calls it for the placeholder QSYSPRT #1 (two pages): option, a handle,
+        // format GUIP0100, file and number, job, '1', first page and count, error code, system, date, time.
+        async Task<byte[]> CallAsync(string option, int length, int first, int count)
+        {
+            byte[] file = [.. Ebcdic.Encode("QSYSPRT   "), .. BigEndian(1)];
+            return await client.CallAsync("QGYRSPL", "QGY",
+                (length, 22, []), (4, 11, BigEndian(length)), (10, 11, Ebcdic.Encode(option.PadRight(10))), (10, 11, new byte[10]),
+                (8, 11, Ebcdic.Encode("GUIP0100")), (14, 11, file), (26, 11, Ebcdic.Encode("QPADEV0001PRTUSER   123456")),
+                (1, 11, Ebcdic.Encode("1")), (8, 11, [.. BigEndian(first), .. BigEndian(count)]), (4, 11, new byte[4]),
+                (8, 11, Ebcdic.Encode("FAKEIBMI")), (7, 11, Ebcdic.Encode("1261012")), (6, 11, Ebcdic.Encode("093000")));
+        }
+
+        // Page 1: the header (all of it returned, one page of two, 132 wide), then its block of lines.
+        var page = Parameters(await CallAsync("*OPEN", 65536, 1, 1))[0].Data;
+        var returned = BinaryPrimitives.ReadInt32BigEndian(page);
+        Assert.Equal(returned, BinaryPrimitives.ReadInt32BigEndian(page.AsSpan(4)));
+        Assert.Equal(1, BinaryPrimitives.ReadInt32BigEndian(page.AsSpan(8)));
+        Assert.Equal(2, BinaryPrimitives.ReadInt32BigEndian(page.AsSpan(20)));
+        Assert.Equal(132, BinaryPrimitives.ReadInt32BigEndian(page.AsSpan(24)));
+        Assert.Equal(returned - 44, BinaryPrimitives.ReadInt32BigEndian(page.AsSpan(44)));
+        Assert.Equal(1, BinaryPrimitives.ReadInt32BigEndian(page.AsSpan(48)));
+        Assert.Equal(41, BinaryPrimitives.ReadInt32BigEndian(page.AsSpan(52)));
+        Assert.Equal("100000", Ebcdic.Decode(page.AsSpan(56, 6)));
+        // The first line: its length (a multiple of 4), page, line number, text length, '000000', the text without trailing blanks.
+        var first = page.AsSpan(64);
+        var text = "PLACEHOLDER REPORT".PadLeft(75) + "PAGE 1".PadLeft(57);
+        Assert.Equal((22 + text.Length + 3) / 4 * 4, BinaryPrimitives.ReadInt32BigEndian(first));
+        Assert.Equal(1, BinaryPrimitives.ReadInt32BigEndian(first[4..]));
+        Assert.Equal(1, BinaryPrimitives.ReadInt32BigEndian(first[8..]));
+        Assert.Equal(text.Length, BinaryPrimitives.ReadInt32BigEndian(first[12..]));
+        Assert.Equal("000000" + text, Ebcdic.Decode(first.Slice(16, 6 + text.Length)));
+        var second = first[BinaryPrimitives.ReadInt32BigEndian(first)..];
+        Assert.Equal(2, BinaryPrimitives.ReadInt32BigEndian(second[8..]));
+        Assert.StartsWith("ITEM 0001", Ebcdic.Decode(second.Slice(22, 9)));
+
+        // Too small a receiver: only the header, which says how much is needed.
+        var small = Parameters(await CallAsync("*OPEN", 44, 1, 1))[0].Data;
+        Assert.Equal(44, BinaryPrimitives.ReadInt32BigEndian(small));
+        Assert.Equal(returned, BinaryPrimitives.ReadInt32BigEndian(small.AsSpan(4)));
+        Assert.Equal(0, BinaryPrimitives.ReadInt32BigEndian(small.AsSpan(8)));
+
+        // Page 2 has the heading and one line; there is no page 3 (the call fails, as CPF34C8 on a real system).
+        var two = Parameters(await CallAsync("*MORE", 65536, 2, 1))[0].Data;
+        Assert.Equal(2, BinaryPrimitives.ReadInt32BigEndian(two.AsSpan(48)));
+        Assert.Equal(2, BinaryPrimitives.ReadInt32BigEndian(two.AsSpan(52)));
+        Assert.Equal(0x0500, BinaryPrimitives.ReadUInt16BigEndian((await CallAsync("*OPEN", 65536, 3, 1)).AsSpan(20)));
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian((await CallAsync("*CLOSE", 44, 1, 1)).AsSpan(20)));
+    }
+
+    private static byte[] BigEndian(int value)
+    {
+        var bytes = new byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(bytes, value);
+        return bytes;
     }
 
     [Fact]

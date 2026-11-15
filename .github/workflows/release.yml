@@ -30,6 +30,21 @@ jobs:
     name: Test, build and push
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The tests make their databases on this PostgreSQL (the scratch server: 127.0.0.1:54329).
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fakeibmi
+          POSTGRES_PASSWORD: fakeibmi
+          POSTGRES_DB: fakeibmi
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U fakeibmi"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     permissions:
       contents: read
       packages: write

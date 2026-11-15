@@ -9,8 +9,9 @@ public class RpgTests
     internal static (IReadOnlyList<string> Shown, string? Error) Run(Machine machine, string source, params string[] parameters)
     {
         var member = new Member("QGPL", "QRPGLESRC", "TEST", "SQLRPGLE", "**FREE\n" + source);
-        machine.Save(member);
-        Assert.True(machine.Compile(member).Ok);
+        var found = machine.Save(member);
+        var compiled = machine.Compile(member);
+        Assert.True(compiled.Ok, $"{compiled.Message} {string.Join("; ", found.Where(d => d.Severity == Severity.Error).Select(d => $"line {d.Line}: {d.Message}"))}");
         var job = new BatchJob("PRTUSER", CancellationToken.None);
         var result = machine.Run($"CALL TEST ({string.Join(' ', parameters)})", job);
         return (job.Messages, result.Ok ? null : result.Message);
@@ -132,6 +133,7 @@ public class RpgTests
             dsply %char(%diff(%date('2024-03-01'):%date('2024-02-28'):*days));
             dsply %char(%dec('12.345':5:2));
             dsply %editc(1234567:'1');
+            *inlr = *on;
             """.Replace("inz(d'2024-02-28')", "inz(%date('2024-02-28'))"));
 
         Assert.Equal(["Ada 42", "    1,234.50-", "55", "4", "bcd", "3", "ABXYEF", "2024-03-01", "2", "12.34", "1,234,567"], shown);
@@ -159,6 +161,7 @@ public class RpgTests
             on-error;
               dsply ('status ' + %char(%status));
             endmon;
+            *inlr = *on;
             """, "'Bob'", "3");
 
         Assert.Equal(["Bob x 3", "divide by zero", "status 103"], shown);
@@ -210,6 +213,7 @@ public class RpgTests
             on-error 202;
               dsply 'no such program';
             endmon;
+            *inlr = *on;
             """);
 
         Assert.Null(error);
@@ -232,6 +236,7 @@ public class RpgTests
             line = 'a very long line that is cut at the width';
             write report line;
             dsply 'printed';
+            *inlr = *on;
             """);
 
         Assert.Null(error);
@@ -251,29 +256,65 @@ public class RpgTests
         using var machine = Machine.Open();
         var found = machine.Save(new Member("QGPL", "QRPGLESRC", "OLD", "RPGLE", """
             **FREE
-            dcl-f custfile disk keyed;
-            dcl-s p pointer;
+            dcl-f custfile seq;
+            dcl-s p object;
             dcl-s n int(10);
             /copy qcpysrc,protos
-            n = %bitand(n:1);
+            n = %nullind(n);
             chain 1 custfile;
             n = 1;
             """));
 
         Assert.Equal(
         [
-            (2, "native file I/O isn't supported (file CUSTFILE): use embedded SQL"),
-            (3, "the type POINTER isn't supported"),
-            (5, "the directive /COPY isn't supported: put the copied code in the member"),
-            (6, "the built-in function %BITAND isn't supported"),
-            (7, "native file I/O isn't supported (CHAIN CUSTFILE): use embedded SQL"),
-        ], found.Select(d => (d.Line, d.Message)));
-        Assert.All(found, d => Assert.Equal(Severity.Unsupported, d.Severity));
+            (2, Severity.Unsupported, "SEQ files aren't supported (file CUSTFILE)"),
+            (3, Severity.Unsupported, "the type OBJECT isn't supported"),
+            (5, Severity.Error, "/COPY qcpysrc,protos: there's no such member"),
+            (6, Severity.Unsupported, "the built-in function %NULLIND isn't supported"),
+            (7, Severity.Unsupported, "CHAIN CUSTFILE: SEQ and SPECIAL files aren't supported"),
+        ], found.Select(d => (d.Line, d.Severity, d.Message)));
         Assert.Equal(found, machine.Store.Diagnostics(machine.Store.FindMember(null, null, "OLD")!));
     }
 
     [Fact]
-    public void FixedFormIsReportedAndTheRestStillRuns()
+    public void EndselAndIterateAreErrorsAndMakeNothing()
+    {
+        using var machine = Machine.Open();
+        var member = new Member("QGPL", "QRPGLESRC", "WRONG", "RPGLE", """
+            **FREE
+            dcl-s n int(10);
+            dow n < 3;
+              n += 1;
+              select;
+                when n = 1;
+                  iterate;
+              endsel;
+            enddo;
+            *inlr = *on;
+            """);
+        var found = machine.Save(member);
+
+        Assert.Equal(
+        [
+            (7, Severity.Error, "ITERATE isn't an RPG operation code (it's CL's): RPG's is ITER"),
+            (8, Severity.Error, "ENDSEL isn't an RPG operation code: a SELECT ends with ENDSL"),
+        ], found.Select(d => (d.Line, d.Severity, d.Message)));
+
+        var job = new BatchJob("QUSER", CancellationToken.None);
+        var compiled = machine.Run("CRTBNDRPG PGM(QGPL/WRONG)", job);
+        Assert.False(compiled.Ok);
+        Assert.Equal("RNS9310", compiled.MessageId);
+        Assert.Contains("2 errors", compiled.Message);
+        Assert.Null(machine.Store.FindObject("QGPL", "WRONG", "*PGM"));
+        Assert.Equal("SQL9001", machine.Run("CRTSQLRPGI OBJ(QGPL/WRONG)", job).MessageId);
+
+        // Fixed, it compiles.
+        machine.Save(member with { Source = member.Source.Replace("iterate;", "iter;").Replace("endsel;", "endsl;") });
+        Assert.True(machine.Run("CRTBNDRPG PGM(QGPL/WRONG)", job).Ok);
+    }
+
+    [Fact]
+    public void FixedAndFreeFormMix()
     {
         using var machine = Machine.Open();
         var member = new Member("QGPL", "QRPGLESRC", "MIXED", "RPGLE",
@@ -281,16 +322,15 @@ public class RpgTests
             "       dcl-s n int(10) inz(2);\n" +
             "       dsply %char(n);\n" +
             "     C                   EVAL      n = 3\n" +
-            "       dsply 'after';\n");
+            "     C                   Z-ADD     n             total\n" +
+            "       dsply %char(total);\n" +
+            "     C                   SETON                                        LR\n");
         var found = machine.Save(member);
-        machine.Compile(member);
+        Assert.DoesNotContain(found, d => d.Severity is Severity.Error or Severity.Unsupported);
+        Assert.True(machine.Compile(member).Ok);
         var job = new BatchJob("PRTUSER", CancellationToken.None);
-        var result = machine.Run("CALL MIXED", job);
-
-        Assert.Equal([1, 4], found.Select(d => d.Line));
-        Assert.Equal(["2"], job.Messages);
-        Assert.False(result.Ok);
-        Assert.Contains("reached line 4, which isn't supported", result.Message);
+        Assert.True(machine.Run("CALL MIXED", job).Ok);
+        Assert.Equal(["2", "3.00"], job.Messages);
     }
 
     [Fact]
@@ -303,5 +343,44 @@ public class RpgTests
         using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
 
         Assert.Throws<OperationCanceledException>(() => machine.Run("CALL SPIN", new BatchJob("PRTUSER", cancel.Token)));
+    }
+    [Fact]
+    public void NamesCanStartWithAtAndDateFormatsCanNameTheirSeparator()
+    {
+        using var machine = Machine.Open();
+        var (shown, error) = Run(machine, """
+            dcl-s @time int(10);
+            dcl-s @total packed(5:0);
+            dcl-s d date inz(d'2024-01-08');
+            dcl-s text char(10) inz('01-09-2024');
+            @time = 5;
+            @total = @time * 2;
+            dsply (%char(@time) + ' ' + %char(@total));
+            dsply %char(d:*usa/);
+            dsply %char(d:*ymd-);
+            dsply %char(%dec(%char(%date('01/08/24':*mdy/):*iso0):8:0));
+            test(de) *usa- text;
+            if not %error;
+              dsply 'valid';
+            endif;
+            *inlr = *on;
+            """);
+        Assert.Null(error);
+        Assert.Equal(["5 10", "01/08/2024", "24-01-08", "20240108", "valid"], shown);
+    }
+    [Fact]
+    public void StatusSubfieldsCanBeNamedByTheirKeywords()
+    {
+        using var machine = Machine.Open();
+        var (shown, error) = Run(machine, """
+            dcl-ds status psds;
+              program *proc;
+              parms *parms;
+            end-ds;
+            dsply (%trim(program) + ' ' + %char(parms));
+            *inlr = *on;
+            """);
+        Assert.Null(error);
+        Assert.Equal(["TEST 0"], shown);
     }
 }

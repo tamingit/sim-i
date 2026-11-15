@@ -34,8 +34,8 @@ public class OptionsTests
     [Fact]
     public void TheDatabaseAndSourceFolderAreOptions()
     {
-        Assert.Equal(new Options(2323, null, IPAddress.Loopback, DatabaseDir: "libs", SourceDir: "src", Check: true),
-            Options.Parse(["--database-dir", "libs", "--check", "--source-dir", "src"]));
+        Assert.Equal(new Options(2323, null, IPAddress.Loopback, Database: "Host=db;Database=fake", SourceDir: "src", Check: true),
+            Options.Parse(["--database", "Host=db;Database=fake", "--check", "--source-dir", "src"]));
         Assert.Throws<ArgumentException>(() => Options.Parse(["--check"]));
     }
 
@@ -74,12 +74,12 @@ public class OptionsTests
             ["FAKE_IBMI_SIGNON_PORT"] = "8476", ["FAKE_IBMI_COMMAND_PORT"] = "8475", ["FAKE_IBMI_MAPPER_PORT"] = "",
             ["FAKE_IBMI_TLS_PORT"] = "992", ["FAKE_IBMI_PRINT_TLS_PORT"] = "9474", ["FAKE_IBMI_SIGNON_TLS_PORT"] = "9476",
             ["FAKE_IBMI_COMMAND_TLS_PORT"] = "9475", ["FAKE_IBMI_TLS_CERT"] = "fake.pfx", ["FAKE_IBMI_TLS_NAMES"] = "ibmi.example",
-            ["FAKE_IBMI_SOURCE_DIR"] = "./source", ["FAKE_IBMI_DATABASE_DIR"] = "./data",
+            ["FAKE_IBMI_SOURCE_DIR"] = "./source", ["FAKE_IBMI_DATABASE"] = "Host=db",
         };
 
         Assert.Equal(new Options(2324, 8474, IPAddress.Any, SignonPort: 8476, CommandPort: 8475, TlsPort: 992, PrintTlsPort: 9474,
                 SignonTlsPort: 9476, CommandTlsPort: 9475, TlsCert: "fake.pfx", TlsNames: "ibmi.example",
-                DatabaseDir: "./data", SourceDir: "./source"),
+                Database: "Host=db", SourceDir: "./source"),
             Options.Parse([], settings));
         Assert.Equal("elsewhere", Options.Parse(["--source-dir", "elsewhere"], settings).SourceDir);
         var overridden = Options.Parse(["--port", "23", "--bind", "127.0.0.1"], settings);

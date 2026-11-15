@@ -156,31 +156,4 @@ public class UsersTests
         Assert.Equal("PRTUSER", users.Main.User);
     }
 
-    [Fact]
-    public void ADatabaseFromBeforeDefaultLibrariesGetsTheColumn()
-    {
-        var folder = Directory.CreateTempSubdirectory("fake-ibmi-old").FullName;
-        try
-        {
-            using (var store = Store.Open(folder))
-            {
-                using var command = store.Connection.CreateCommand();
-                command.CommandText = """
-                    DROP TABLE QFAKE_USER;
-                    CREATE TABLE QFAKE_USER (USERNAME TEXT NOT NULL PRIMARY KEY, PASSWORD TEXT NOT NULL,
-                        STATUS TEXT NOT NULL DEFAULT '*ENABLED', PWDEXP TEXT NOT NULL DEFAULT '*NO', TEXT TEXT NOT NULL DEFAULT '');
-                    INSERT INTO QFAKE_USER VALUES ('OLDER', 'Old12345', '*ENABLED', '*NO', 'From before');
-                    """;
-                command.ExecuteNonQuery();
-            }
-
-            using var again = Store.Open(folder);
-            Assert.Equal("QGPL", again.FindUser("OLDER")!.DefaultLibrary);
-            Assert.Equal("From before", again.FindUser("OLDER")!.Text);
-        }
-        finally
-        {
-            Directory.Delete(folder, recursive: true);
-        }
-    }
 }
