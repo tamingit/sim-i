@@ -7,10 +7,12 @@
 # TLS on IBM's ports too: Telnet 992, Network Print 9474, remote command 9475, sign-on 9476. The certificate is made
 # in /certs on first start; mount a named volume there (-v fake-ibmi-certs:/certs) to keep it,
 # and copy /certs/fake-ibmi.crt out for clients to trust.
-# Each library's SQLite database (source, programs, tables) is a file in /data (QGPL.db, MYLIB.db ...), and QGPL's also
-# keeps the users and spooled files: mount a named volume on /data (-v fake-ibmi-data:/data) to keep them.
+# Everything (each library a schema: source, programs, tables; QGPL also the users and spooled files) is in the
+# PostgreSQL database FAKE_IBMI_DATABASE names (-e FAKE_IBMI_DATABASE="Host=db;Database=fakeibmi;Username=...;Password=...").
 # To load source, mount a folder with a folder for each library and set FAKE_IBMI_SOURCE_DIR to it
 # (-v "$PWD/source:/source:ro" -e FAKE_IBMI_SOURCE_DIR=/source).
+# The web source editor is on 8080 (sign on with a user profile), and the IFS's root is /ifs: mount a
+# named volume there (-v fake-ibmi-ifs:/ifs) to keep it. compose.yaml runs all of this, with PostgreSQL.
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
@@ -19,11 +21,13 @@ RUN dotnet restore src/FakeIbmI/FakeIbmI.csproj
 COPY src/ src/
 RUN dotnet publish src/FakeIbmI/FakeIbmI.csproj -c Release --no-restore -o /app
 
-FROM mcr.microsoft.com/dotnet/runtime:10.0
+# The ASP.NET runtime: the web source editor runs on it.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app ./
-RUN mkdir /certs /data && chown app /certs /data
+RUN mkdir /certs /ifs && chown app /certs /ifs
 USER app
-EXPOSE 2323 992 8474 9474 8475 9475 8476 9476 449
+EXPOSE 2323 992 8474 9474 8475 9475 8476 9476 449 8080
 ENTRYPOINT ["dotnet", "FakeIbmI.dll", "--bind", "0.0.0.0", "--port", "2323", "--print-port", "8474", "--signon-port", "8476", "--command-port", "8475", "--mapper-port", "449", \
-    "--tls-port", "992", "--print-tls-port", "9474", "--signon-tls-port", "9476", "--command-tls-port", "9475", "--tls-cert", "/certs/fake-ibmi.pfx", "--database-dir", "/data"]
+    "--web-port", "8080", "--ifs-dir", "/ifs", \
+    "--tls-port", "992", "--print-tls-port", "9474", "--signon-tls-port", "9476", "--command-tls-port", "9475", "--tls-cert", "/certs/fake-ibmi.pfx"]

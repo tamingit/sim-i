@@ -11,16 +11,17 @@ namespace FakeIbmI;
 /// --signon-tls-port, --print-tls-port and --command-tls-port (each none), --tls-cert (a PKCS #12 file, made when
 /// missing) and --tls-name (more names for a certificate it makes, comma-separated). --env-file
 /// names the file of settings, such as the users (default: .env, when there is one). --database
-/// names the folder of the libraries' SQLite databases, one file for each (default: in memory), --source-dir a
+/// is the PostgreSQL database's connection string (Host=...;Database=...;Username=...;Password=...), --source-dir a
 /// folder of source to read at start-up, a folder for each library, and --check reads that folder, reports what isn't
-/// supported and stops. Settings (FAKE_IBMI_PORT, FAKE_IBMI_BIND, FAKE_IBMI_SOURCE_DIR, FAKE_IBMI_DATABASE_DIR and the rest, see .env.example) give
+/// supported and stops. --web-port runs the web source editor (none: no editor). --ifs-dir names the folder that is the
+/// integrated file system's root (default: a temporary folder). Settings (FAKE_IBMI_PORT, FAKE_IBMI_BIND, FAKE_IBMI_SOURCE_DIR, FAKE_IBMI_DATABASE and the rest, see .env.example) give
 /// what the command line doesn't: the command line wins.
 /// </summary>
 public sealed record Options(
     int Port, int? PrintPort, IPAddress Bind, bool Trace = false, int? SignonPort = null, int? MapperPort = null,
     int? TlsPort = null, int? SignonTlsPort = null, int? PrintTlsPort = null, string? TlsCert = null, string? TlsNames = null,
     string? EnvFile = null, int? CommandPort = null, int? CommandTlsPort = null,
-    string? DatabaseDir = null, string? SourceDir = null, bool Check = false)
+    string? Database = null, string? SourceDir = null, bool Check = false, int? WebPort = null, string? IfsDir = null)
 {
     /// <summary>Whether any server listens for TLS, and so needs a certificate.</summary>
     public bool AnyTls => TlsPort is not null || SignonTlsPort is not null || PrintTlsPort is not null || CommandTlsPort is not null;
@@ -30,7 +31,8 @@ public sealed record Options(
     [
         "FAKE_IBMI_BIND", "FAKE_IBMI_PORT", "FAKE_IBMI_PRINT_PORT", "FAKE_IBMI_SIGNON_PORT", "FAKE_IBMI_COMMAND_PORT",
         "FAKE_IBMI_MAPPER_PORT", "FAKE_IBMI_TLS_PORT", "FAKE_IBMI_PRINT_TLS_PORT", "FAKE_IBMI_SIGNON_TLS_PORT",
-        "FAKE_IBMI_COMMAND_TLS_PORT", "FAKE_IBMI_TLS_CERT", "FAKE_IBMI_TLS_NAMES", "FAKE_IBMI_SOURCE_DIR", "FAKE_IBMI_DATABASE_DIR",
+        "FAKE_IBMI_COMMAND_TLS_PORT", "FAKE_IBMI_TLS_CERT", "FAKE_IBMI_TLS_NAMES", "FAKE_IBMI_SOURCE_DIR", "FAKE_IBMI_DATABASE",
+        "FAKE_IBMI_WEB_PORT", "FAKE_IBMI_IFS_DIR", "FAKE_IBMI_REMOTE_USER", "FAKE_IBMI_REMOTE_PASSWORD",
     ];
 
     /// <summary>The file --env-file names, which has to be known before the settings in it can be read.</summary>
@@ -60,7 +62,8 @@ public sealed record Options(
             PrintTlsPort: SettingPort("FAKE_IBMI_PRINT_TLS_PORT"), TlsCert: Setting("FAKE_IBMI_TLS_CERT"),
             TlsNames: Setting("FAKE_IBMI_TLS_NAMES"), CommandPort: SettingPort("FAKE_IBMI_COMMAND_PORT"),
             CommandTlsPort: SettingPort("FAKE_IBMI_COMMAND_TLS_PORT"),
-            DatabaseDir: Setting("FAKE_IBMI_DATABASE_DIR"), SourceDir: Setting("FAKE_IBMI_SOURCE_DIR"));
+            Database: Setting("FAKE_IBMI_DATABASE"), SourceDir: Setting("FAKE_IBMI_SOURCE_DIR"),
+            WebPort: SettingPort("FAKE_IBMI_WEB_PORT"), IfsDir: Setting("FAKE_IBMI_IFS_DIR"));
         for (var i = 0; i < args.Count; i++)
         {
             if (args[i] == "--trace")
@@ -91,8 +94,10 @@ public sealed record Options(
                 "--print-tls-port" => options with { PrintTlsPort = PortValue() },
                 "--tls-cert" => options with { TlsCert = value },
                 "--env-file" => options with { EnvFile = value },
-                "--database-dir" => options with { DatabaseDir = value },
+                "--database" => options with { Database = value },
                 "--source-dir" => options with { SourceDir = value },
+                "--web-port" => options with { WebPort = PortValue() },
+                "--ifs-dir" => options with { IfsDir = value },
                 "--tls-name" => options with { TlsNames = options.TlsNames is null ? value : $"{options.TlsNames},{value}" },
                 "--bind" => options with
                 {

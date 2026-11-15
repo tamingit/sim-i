@@ -43,6 +43,9 @@ public static class Ebcdic
 
     public static char ToChar(byte b) => (char)ToUnicode[b];
 
+    /// <summary>The EBCDIC byte for a character, or the substitute.</summary>
+    public static byte ToByte(char c) => FromUnicode.TryGetValue(c, out var b) ? b : Substitute;
+
     public static string Decode(ReadOnlySpan<byte> bytes)
     {
         var text = new StringBuilder(bytes.Length);

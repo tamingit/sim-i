@@ -73,7 +73,7 @@ internal sealed class MemberListPanel(Machine machine, string defaultLibrary, Ac
         for (var i = 0; i < PageSize && _top + i < members.Count; i++)
         {
             var member = members[_top + i];
-            var unsupported = machine.Store.Diagnostics(member).Count(d => d.Severity == Severity.Unsupported);
+            var unsupported = machine.Store.Diagnostics(member).Count(d => d.Severity is Severity.Unsupported or Severity.Error);
             var row = FirstRow + i;
             rows.Add(Join(
                 Sba(row, 2), Sf(0x4000, Underline, 2),
@@ -424,9 +424,12 @@ internal sealed class EditorPanel : Panel
             {
                 var saved = _member with { Source = string.Join('\n', _lines) + (_lines.Count > 0 ? "\n" : "") };
                 var diagnostics = _machine.Save(saved);
-                _log($"member {saved} saved: {diagnostics.Count(d => d.Severity == Severity.Unsupported)} not supported");
                 var unsupported = diagnostics.Count(d => d.Severity == Severity.Unsupported);
-                var summary = $"Member {saved.Name} saved{(unsupported == 0 ? "." : $": {unsupported} line{(unsupported == 1 ? "" : "s")} not supported.")}";
+                var errors = diagnostics.Count(d => d.Severity == Severity.Error);
+                _log($"member {saved} saved: {unsupported} not supported{(errors > 0 ? $", {errors} in error" : "")}");
+                var found = string.Join(", ", new[] { (errors, "in error"), (unsupported, "not supported") }.Where(f => f.Item1 > 0)
+                    .Select(f => $"{f.Item1} line{(f.Item1 == 1 ? "" : "s")} {f.Item2}"));
+                var summary = $"Member {saved.Name} saved{(found.Length == 0 ? "." : $": {found}.")}";
                 return diagnostics.Count == 0 ? new PanelResult(_back, summary) : new PanelResult(new DiagnosticsPanel(_machine, saved, _back), summary);
             }
             default:
@@ -456,10 +459,10 @@ internal sealed class DiagnosticsPanel : Panel
         int Count(Severity severity) => diagnostics.Count(d => d.Severity == severity);
         _summary = diagnostics.Count == 0
             ? "Nothing found: every line is supported."
-            : $"{Count(Severity.Unsupported)} not supported, {Count(Severity.Warning)} warning{(Count(Severity.Warning) == 1 ? "" : "s")}, {Count(Severity.Info)} translated or ignored";
+            : $"{(Count(Severity.Error) > 0 ? $"{Count(Severity.Error)} in error, " : "")}{Count(Severity.Unsupported)} not supported, {Count(Severity.Warning)} warning{(Count(Severity.Warning) == 1 ? "" : "s")}, {Count(Severity.Info)} translated or ignored";
         foreach (var d in diagnostics)
         {
-            var kind = d.Severity switch { Severity.Unsupported => "Not supported", Severity.Warning => "Warning", _ => "Note" };
+            var kind = d.Severity switch { Severity.Error => "Error", Severity.Unsupported => "Not supported", Severity.Warning => "Warning", _ => "Note" };
             // A long message carries on, indented, on the rows below.
             var words = d.Message.Split(' ');
             var text = "";
