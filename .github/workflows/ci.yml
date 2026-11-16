@@ -16,13 +16,13 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: fakeibmi
-          POSTGRES_PASSWORD: fakeibmi
-          POSTGRES_DB: fakeibmi
+          POSTGRES_USER: simi
+          POSTGRES_PASSWORD: simi
+          POSTGRES_DB: simi
         ports:
           - 54329:5432
         options: >-
-          --health-cmd "pg_isready -U fakeibmi"
+          --health-cmd "pg_isready -U simi"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
@@ -34,6 +34,6 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - name: Tests
-        run: dotnet test FakeIbmI.slnx
+        run: dotnet test SimI.slnx
       - name: Image
         run: docker build .

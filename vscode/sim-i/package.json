@@ -1,0 +1,239 @@
+{
+  "name": "sim-i",
+  "displayName": "Sim i",
+  "description": "Edit RPG in your repo, have each save compiled on Sim i, and debug it there: breakpoints, stepping, variables, watches.",
+  "version": "0.1.0",
+  "publisher": "sim-i",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onDebugResolve:sim-i"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rpgle",
+        "aliases": [
+          "RPGLE",
+          "ILE RPG"
+        ],
+        "extensions": [
+          ".rpgle",
+          ".sqlrpgle",
+          ".rpgleinc"
+        ]
+      }
+    ],
+    "breakpoints": [
+      {
+        "language": "rpgle"
+      },
+      {
+        "language": "sqlrpgle"
+      },
+      {
+        "language": "rpg"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "sim-i",
+        "label": "Sim i (RPG)",
+        "languages": [
+          "rpgle",
+          "sqlrpgle",
+          "rpg"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "The program to call: MYLIB/MYPGM or MYPGM. Left out, it's the program of the source file that's open."
+              },
+              "parms": {
+                "type": "array",
+                "description": "The parameters, as CALL passes them: text as characters, numbers as packed (15 5).",
+                "items": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                },
+                "default": []
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the program's first statement.",
+                "default": false
+              },
+              "host": {
+                "type": "string",
+                "description": "Sim i's host (default: the simI.host setting)."
+              },
+              "port": {
+                "type": "number",
+                "description": "Its debug port (default: the simI.debugPort setting)."
+              },
+              "user": {
+                "type": "string",
+                "description": "The user profile to sign on with (default: the simI.user setting)."
+              },
+              "sourceRoot": {
+                "type": "string",
+                "description": "The folder laid out LIBRARY/FILE/member.ext (default: the simI.sourceRoot setting, or the workspace folder)."
+              }
+            }
+          },
+          "attach": {
+            "properties": {
+              "jobUser": {
+                "type": "string",
+                "description": "Whose jobs stop at breakpoints: a user profile, or *ALL. Left out, the user signed on with: run the program in that user's 5250 session."
+              },
+              "host": {
+                "type": "string",
+                "description": "Sim i's host (default: the simI.host setting)."
+              },
+              "port": {
+                "type": "number",
+                "description": "Its debug port (default: the simI.debugPort setting)."
+              },
+              "user": {
+                "type": "string",
+                "description": "The user profile to sign on with (default: the simI.user setting)."
+              },
+              "sourceRoot": {
+                "type": "string",
+                "description": "The folder laid out LIBRARY/FILE/member.ext (default: the simI.sourceRoot setting, or the workspace folder)."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "sim-i",
+            "request": "launch",
+            "name": "Sim i: call this program",
+            "parms": []
+          },
+          {
+            "type": "sim-i",
+            "request": "attach",
+            "name": "Sim i: attach to my 5250 session"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Sim i: call a program",
+            "body": {
+              "type": "sim-i",
+              "request": "launch",
+              "name": "Sim i: call ${1:MYLIB/MYPGM}",
+              "program": "${1:MYLIB/MYPGM}",
+              "parms": []
+            }
+          },
+          {
+            "label": "Sim i: attach to a user's jobs",
+            "body": {
+              "type": "sim-i",
+              "request": "attach",
+              "name": "Sim i: attach",
+              "jobUser": "${1:*ALL}"
+            }
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Sim i",
+      "properties": {
+        "simI.host": {
+          "type": "string",
+          "default": "localhost",
+          "description": "Sim i's host name or address."
+        },
+        "simI.debugPort": {
+          "type": "number",
+          "default": 4711,
+          "description": "Its debug port (--debug-port)."
+        },
+        "simI.webPort": {
+          "type": "number",
+          "default": 8080,
+          "description": "Its web port (--web-port), which saved source is sent to."
+        },
+        "simI.user": {
+          "type": "string",
+          "default": "",
+          "description": "The user profile to sign on with. The password is asked for once and kept in VS Code's secret storage."
+        },
+        "simI.sourceRoot": {
+          "type": "string",
+          "default": "",
+          "description": "The folder laid out LIBRARY/FILE/member.ext, when it isn't the workspace folder: an absolute path, or one relative to the workspace folder."
+        },
+        "simI.uploadOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send each source file to Sim i when it's saved: it's checked and compiled there, and what's found is listed under Problems."
+        },
+        "simI.remoteHost": {
+          "type": "string",
+          "default": "",
+          "description": "The real IBM i that a program's files are copied from: its host name or address."
+        },
+        "simI.remoteUser": {
+          "type": "string",
+          "default": "",
+          "description": "The user profile to sign on to the real IBM i with. The password is asked for once and kept in VS Code's secret storage."
+        },
+        "simI.remoteLibraries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "The libraries on the real IBM i to look for a program's files in, in order."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "simI.programFiles",
+        "title": "Sim i: Files of This Program",
+        "icon": "$(database)"
+      },
+      {
+        "command": "simI.uploadFile",
+        "title": "Sim i: Send This File and Compile It"
+      },
+      {
+        "command": "simI.uploadFolder",
+        "title": "Sim i: Send a Folder and Compile It"
+      },
+      {
+        "command": "simI.signOn",
+        "title": "Sim i: Sign On (Change User or Password)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "simI.programFiles",
+          "when": "resourceExtname =~ /\\.(rpgle|sqlrpgle)$/i",
+          "group": "navigation"
+        }
+      ]
+    }
+  }
+}
