@@ -130,6 +130,7 @@ internal sealed partial class Interpreter
     public void Run(IReadOnlyList<Cell> arguments)
     {
         if (_depth > 50) throw new RpgHalt($"{_name}: programs are calling each other more than 50 deep");
+        var debugMark = _machine.Debugger.Enter();
         try
         {
             Activate();
@@ -180,6 +181,7 @@ internal sealed partial class Interpreter
         }
         catch (RpgError e)
         {
+            _machine.Debugger.Failed(this, e.Message);
             throw new RpgHalt($"{_name} ended in error at line {_line}: {e.Message}{(e.Status > 0 ? $" (status {e.Status:00000})" : "")}", e.MessageId);
         }
         catch (OverflowException)
@@ -193,6 +195,7 @@ internal sealed partial class Interpreter
         finally
         {
             Deactivate();
+            _machine.Debugger.Leave(debugMark);
         }
     }
 
@@ -535,6 +538,7 @@ internal sealed partial class Interpreter
     private Signal Execute(Stmt statement, Frame frame)
     {
         _line = statement.Line;
+        if (_machine.Debugger.Active) _machine.Debugger.Statement(this, frame, statement.Line);
         if ((++_statements & 0x3ff) == 0)
         {
             _host.Cancelled.ThrowIfCancellationRequested();

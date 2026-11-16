@@ -28,6 +28,47 @@ public class WebServerTests
     }
 
     [Fact]
+    public async Task TheReceivePageNeedsASignOnAndARemoteSystemThatAnswers()
+    {
+        var (machine, server, client) = await Started();
+        await using var _ = server;
+        using var __ = machine;
+        // The page itself is served to anyone; what it asks for isn't.
+        Assert.Contains("Receive a library", await client.GetStringAsync("/receive"));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/remote")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/api/remote/survey", new { host = "127.0.0.1", library = "MYLIB" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/signon", new { user = "prtuser", password = "Secret12" })).StatusCode);
+
+        // The room the database has: its size, and (the test server's user being a superuser) what's free.
+        var remote = await client.GetFromJsonAsync<JsonElement>("/api/remote");
+        Assert.True(remote.GetProperty("storage").GetProperty("database").GetInt64() > 0);
+        Assert.Equal(JsonValueKind.Null, remote.GetProperty("transfer").ValueKind);
+
+        // No user or password (and none in the settings), no library, and nothing listening there.
+        var noUser = await client.PostAsJsonAsync("/api/remote/survey", new { host = "127.0.0.1", library = "MYLIB" });
+        Assert.Equal(HttpStatusCode.BadRequest, noUser.StatusCode);
+        var noLibrary = await client.PostAsJsonAsync("/api/remote/survey", new { host = "127.0.0.1", user = "ME", password = "secret" });
+        Assert.Equal(HttpStatusCode.BadRequest, noLibrary.StatusCode);
+        var unreachable = await client.PostAsJsonAsync("/api/remote/survey", new { host = "127.0.0.1", port = 1, user = "ME", password = "secret", library = "MYLIB" });
+        Assert.Equal(HttpStatusCode.BadGateway, unreachable.StatusCode);
+        Assert.DoesNotContain("secret", await unreachable.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.PostAsJsonAsync("/api/remote/pull", new { host = "127.0.0.1", port = 1, user = "ME", password = "secret", library = "MYLIB" })).StatusCode);
+
+        // A receive that can't connect ends at once, saying why, and makes no library.
+        var started = await client.PostAsJsonAsync("/api/remote/pull", new { host = "127.0.0.1", port = 1, user = "ME", password = "secret", library = "MYLIB", objects = new[] { "CUSTPF" } });
+        Assert.Equal(HttpStatusCode.OK, started.StatusCode);
+        JsonElement state;
+        do
+        {
+            await Task.Delay(50);
+            state = await client.GetFromJsonAsync<JsonElement>("/api/remote/pull");
+        } while (state.GetProperty("running").GetBoolean());
+        Assert.False(state.GetProperty("ok").GetBoolean());
+        Assert.Contains("127.0.0.1", state.GetProperty("message").GetString());
+        Assert.False(machine.Store.HasLibrary("MYLIB"));
+    }
+
+    [Fact]
     public async Task NothingWithoutSigningOn()
     {
         var (machine, server, client) = await Started();

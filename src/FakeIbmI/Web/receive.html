@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fake IBM i Receive</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #5d6577; --line: #dde1e8; --accent: #2457c5;
+    --accent-ink: #ffffff; --error: #c62f2f; --error-bg: #fdecec; --warn: #a76a00; --warn-bg: #fff4dc; --ok: #23824a;
+    --ok-bg: #e5f5ec; --code-bg: #fbfbfc; --gutter: #eef0f4; --select: #dbe6ff;
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1a1e26; --ink: #e5e8ef; --muted: #9aa3b5; --line: #2c3240; --accent: #6f9bff;
+      --accent-ink: #0b1020; --error: #ff7a7a; --error-bg: #3a1d20; --warn: #f2b84b; --warn-bg: #3a2d14; --ok: #5fd08f;
+      --ok-bg: #173226; --code-bg: #161a21; --gutter: #1f242e; --select: #263a66;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+  button, input, select { font: inherit; color: inherit; }
+  button { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.danger { color: var(--error); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hidden { display: none !important; }
+  a { color: var(--accent); }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  header .who { color: var(--muted); font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
+  .card h2 { font-size: 14px; margin: 0 0 12px; }
+  .note { color: var(--muted); font-size: 13px; margin: 0; }
+  .message { color: var(--error); font-size: 13px; min-height: 1.2em; }
+  .fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+  .fields label { display: grid; gap: 4px; color: var(--muted); font-size: 13px; }
+  .fields label.check { display: flex; align-items: center; gap: 6px; padding-bottom: 6px; color: var(--ink); }
+  .fields input.name { width: 13ch; text-transform: uppercase; font-family: var(--mono); }
+  .fields input.port { width: 8ch; }
+  .fields input.host { width: 30ch; }
+
+  #signon { min-height: 80vh; display: grid; place-items: center; padding: 16px; }
+  #signon form { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 24px; width: min(360px, 100%); display: grid; gap: 12px; }
+  #signon h1 { margin: 0 0 4px; font-size: 20px; }
+  #signon label { display: grid; gap: 4px; color: var(--muted); font-size: 13px; }
+
+  /* Storage */
+  .figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .figure { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .figure .label { color: var(--muted); font-size: 12px; }
+  .figure .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .figure .sub { color: var(--muted); font-size: 12px; min-height: 1.3em; }
+  .meter { height: 10px; border-radius: 999px; background: var(--gutter); overflow: hidden; display: flex; margin: 12px 0 6px; }
+  .meter > div { height: 100%; }
+  .meter .used { background: var(--muted); }
+  .meter .need { background: var(--accent); }
+  .meter .need.over { background: var(--error); }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; color: var(--muted); font-size: 12px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .banner { border-radius: 8px; padding: 8px 12px; font-size: 13px; margin-top: 10px; }
+  .banner.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner.error { background: var(--error-bg); color: var(--error); }
+  .banner.ok { background: var(--ok-bg); color: var(--ok); }
+
+  /* Objects */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .toolbar .spacer { flex: 1; }
+  .toolbar input[type=search] { width: 22ch; }
+  .tablewrap { max-height: 52vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 4px 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600; z-index: 1; }
+  th button { border: 0; padding: 0; background: none; color: inherit; font-weight: 600; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.name { font-family: var(--mono); }
+  td.text { white-space: normal; color: var(--muted); min-width: 16ch; }
+  tr.no td { color: var(--muted); }
+  tr.sel td { background: var(--select); }
+  tbody tr:hover td { background: var(--gutter); }
+  tbody tr.sel:hover td { background: var(--select); }
+
+  /* Progress */
+  .bar { height: 12px; border-radius: 999px; background: var(--gutter); overflow: hidden; margin: 10px 0; }
+  .bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .bar.busy > div { width: 30%; animation: slide 1.4s ease-in-out infinite alternate; }
+  @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
+  @media (prefers-reduced-motion: reduce) { .bar.busy > div { animation: none; } .bar > div { transition: none; } }
+  #log { margin: 10px 0 0; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; font: 12px/1.5 var(--mono); max-height: 36vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #log .bad { color: var(--error); }
+</style>
+</head>
+<body>
+<div id="signon" class="hidden">
+  <form id="signonForm">
+    <h1>Fake IBM i</h1>
+    <label>User <input id="user" autocomplete="username" required maxlength="10"></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <div class="message" id="signonMessage"></div>
+    <button class="primary">Sign on</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>Receive a library from an IBM i</h1>
+    <a href="/">Source editor</a>
+    <span class="who" id="who"></span>
+  </header>
+  <main>
+    <section class="card">
+      <h2>1. The remote system</h2>
+      <form id="remoteForm" class="fields">
+        <label>System <input id="host" class="host" placeholder="ibmi.example.com" required autocomplete="off" spellcheck="false"></label>
+        <label>FTP port <input id="port" class="port" type="number" min="1" max="65535" value="21"></label>
+        <label>User <input id="rmtUser" class="name" maxlength="10" autocomplete="off" spellcheck="false"></label>
+        <label>Password <input id="rmtPassword" type="password" autocomplete="off"></label>
+        <label>Library <input id="library" class="name" maxlength="10" required autocomplete="off" spellcheck="false"></label>
+        <label class="check"><input id="secure" type="checkbox"> Insist on TLS</label>
+        <button class="primary" id="connect">Connect and list</button>
+      </form>
+      <div class="message" id="remoteMessage"></div>
+      <p class="note">Nothing is received yet: this lists the library's objects with their sizes. It works in the FTP session's QTEMP on the remote system and changes nothing else there. A library of thousands of files takes a minute or two to list.</p>
+    </section>
+
+    <section class="card">
+      <h2>Room in the database</h2>
+      <div class="figures">
+        <div class="figure"><div class="label">Database now</div><div class="value" id="dbNow">–</div><div class="sub" id="dbNowSub"></div></div>
+        <div class="figure"><div class="label">Free on its server</div><div class="value" id="dbFree">–</div><div class="sub" id="dbFreeSub"></div></div>
+        <div class="figure"><div class="label">Chosen, on the IBM i</div><div class="value" id="chosenThere">–</div><div class="sub" id="chosenCount"></div></div>
+        <div class="figure"><div class="label">Chosen, estimated here</div><div class="value" id="chosenHere">–</div><div class="sub" id="chosenHereSub"></div></div>
+      </div>
+      <div class="meter" id="meter" role="img" aria-label="Room used, needed and free"><div class="used" id="meterUsed"></div><div class="need" id="meterNeed"></div></div>
+      <div class="legend"><span><i style="background:var(--muted)"></i>Used on the server's disk</span><span><i style="background:var(--accent)"></i>What's chosen would add</span><span><i style="background:var(--gutter)"></i>Free after</span></div>
+      <div id="roomBanner" class="banner hidden"></div>
+    </section>
+
+    <section class="card hidden" id="objectsCard">
+      <h2>2. What to receive <span class="note" id="listedFrom"></span></h2>
+      <div class="toolbar">
+        <input id="filter" type="search" placeholder="Filter by name or text" aria-label="Filter objects">
+        <select id="kind" aria-label="Kind of object"><option value="">Every kind</option></select>
+        <button id="selShown" title="Choose every receivable object the filter shows">Choose shown</button>
+        <button id="unselShown">Clear shown</button>
+        <button id="selNone">Clear all</button>
+        <span class="spacer"></span>
+        <span class="note" id="shownNote"></span>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th></th>
+            <th><button data-sort="name">Object</button></th>
+            <th><button data-sort="kind">Kind</button></th>
+            <th>Text</th>
+            <th class="num"><button data-sort="records">Records</button></th>
+            <th class="num"><button data-sort="size">Size there</button></th>
+            <th class="num"><button data-sort="estimate">Estimate here</button></th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="fields" style="margin-top:14px">
+        <label>Restore to library <input id="restoreTo" class="name" maxlength="10" autocomplete="off" spellcheck="false"></label>
+        <label class="check"><input id="withData" type="checkbox" checked> With records</label>
+        <button class="primary" id="pull" disabled>Receive</button>
+      </div>
+      <div class="message" id="pullMessage"></div>
+      <p class="note">Files, tables, logical files, indexes, views, source members, data areas and message files are received; programs and other compiled objects are listed but can't be. An object that's already here is replaced. Estimates come from each file's size on the IBM i, less its deleted records, plus a fifth for PostgreSQL's rows and indexes.</p>
+    </section>
+
+    <section class="card hidden" id="progressCard">
+      <h2>3. Receiving <span class="note" id="progressWhat"></span></h2>
+      <div class="figures">
+        <div class="figure"><div class="label">Objects</div><div class="value" id="pObjects">0</div><div class="sub" id="pObjectsSub"></div></div>
+        <div class="figure"><div class="label">Records</div><div class="value" id="pRecords">0</div><div class="sub" id="pRate"></div></div>
+        <div class="figure"><div class="label">Database grew by</div><div class="value" id="pGrew">0</div><div class="sub" id="pGrewSub"></div></div>
+        <div class="figure"><div class="label">Time</div><div class="value" id="pTime">0:00</div><div class="sub" id="pFree"></div></div>
+      </div>
+      <div class="bar" id="pBar"><div id="pBarFill"></div></div>
+      <div class="toolbar"><button class="danger" id="cancel">End it</button><span class="note" id="pState"></span></div>
+      <div id="pResult" class="banner hidden"></div>
+      <div id="log" aria-live="off"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const state = { objects: [], chosen: new Set(), sort: "name", descending: false, storage: null, survey: null, estimateAtStart: 0, next: 0, timer: null };
+const SHOWN = 1500;
+
+async function api(method, url, body) {
+  const options = { method, headers: { "X-Fake-IBMi": "1" }, credentials: "same-origin" };
+  if (body !== undefined) { options.body = JSON.stringify(body); options.headers["Content-Type"] = "application/json"; }
+  const response = await fetch(url, options);
+  if (response.status === 401 && url !== "/api/signon") { showSignon(); throw new Error("Sign on again."); }
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) throw new Error((data && data.message) || response.statusText);
+  return data;
+}
+
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) if (c !== null && c !== undefined) node.append(c);
+  return node;
+}
+
+function bytes(n) {
+  if (n === null || n === undefined) return "–";
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? v : v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + " " + units[i];
+}
+const count = n => Number(n).toLocaleString("en-US");
+const key = o => o.name + " " + o.type;
+
+function showSignon() { $("app").classList.add("hidden"); $("signon").classList.remove("hidden"); $("user").focus(); }
+
+$("signonForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("signonMessage").textContent = "";
+  try {
+    await api("POST", "/api/signon", { user: $("user").value, password: $("password").value });
+    $("password").value = "";
+    await start();
+  } catch (error) { $("signonMessage").textContent = error.message; }
+});
+
+async function start() {
+  const me = await api("GET", "/api/me");
+  const remote = await api("GET", "/api/remote");
+  $("signon").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  $("who").textContent = me.user;
+  if (remote.user) {
+    $("rmtUser").placeholder = remote.user;
+    if (remote.hasPassword) $("rmtPassword").placeholder = "from the settings";
+  }
+  state.storage = remote.storage;
+  drawRoom();
+  if (remote.transfer) follow(remote.transfer);
+}
+
+// ---- room ----
+
+function chosenObjects() { return state.objects.filter(o => state.chosen.has(key(o))); }
+
+function estimateOf(objects) {
+  const withData = $("withData").checked;
+  return objects.reduce((sum, o) => sum + (withData ? o.estimate : o.bare), 0);
+}
+
+function drawRoom() {
+  const storage = state.storage || {};
+  const chosen = chosenObjects();
+  const need = estimateOf(chosen);
+  $("dbNow").textContent = bytes(storage.database);
+  $("dbFree").textContent = storage.free === null || storage.free === undefined ? "Unknown" : bytes(storage.free);
+  $("dbFreeSub").textContent = storage.free === null || storage.free === undefined ? "the server doesn't say (it takes a superuser)" : "";
+  $("chosenThere").textContent = chosen.length ? bytes(chosen.reduce((s, o) => s + o.size, 0)) : "–";
+  $("chosenCount").textContent = chosen.length ? `${count(chosen.length)} object${chosen.length === 1 ? "" : "s"}, ${count(chosen.reduce((s, o) => s + o.records, 0))} records` : "nothing chosen";
+  $("chosenHere").textContent = chosen.length ? bytes(need) : "–";
+  $("chosenHereSub").textContent = chosen.length && !$("withData").checked ? "without records" : "";
+  const banner = $("roomBanner");
+  banner.className = "banner hidden";
+  const free = storage.free;
+  if (free !== null && free !== undefined) {
+    // The disk as a whole: what's used (the database is part of it), what the choice adds, and what stays free.
+    const total = storage.total || free + (storage.database || 0);
+    const usedShare = Math.min(100, (total - free) / total * 100);
+    $("dbFreeSub").textContent = `of ${bytes(total)}`;
+    const needShare = Math.min(100 - usedShare, need / total * 100);
+    $("meterUsed").style.width = usedShare + "%";
+    $("meterNeed").style.width = needShare + "%";
+    $("meterNeed").className = "need" + (need > free ? " over" : "");
+    $("meter").classList.remove("hidden");
+    if (chosen.length && need > free) {
+      banner.className = "banner error";
+      banner.textContent = `What's chosen needs about ${bytes(need)}, and ${bytes(free)} is free: ${bytes(need - free)} too much. Choose less, or receive without records.`;
+    } else if (chosen.length && need > free * 0.8) {
+      banner.className = "banner warn";
+      banner.textContent = `What's chosen needs about ${bytes(need)} of the ${bytes(free)} free. The estimate can be off by a fifth or so: that's close.`;
+    } else if (chosen.length) {
+      banner.className = "banner ok";
+      banner.textContent = `It fits: about ${bytes(need)} of the ${bytes(free)} free, leaving ${bytes(free - need)}.`;
+    }
+  } else {
+    $("meterUsed").style.width = "0";
+    $("meterNeed").style.width = "0";
+    if (chosen.length) {
+      banner.className = "banner warn";
+      banner.textContent = `What's chosen needs about ${bytes(need)}. The database server doesn't say how much room it has: check it has that much.`;
+    }
+  }
+  $("pull").disabled = chosen.length === 0 || state.running;
+  $("pull").textContent = chosen.length ? `Receive ${count(chosen.length)} object${chosen.length === 1 ? "" : "s"}` : "Receive";
+}
+
+// ---- the remote library ----
+
+function login() {
+  return {
+    host: $("host").value.trim(), port: Number($("port").value) || 21, user: $("rmtUser").value.trim(), password: $("rmtPassword").value,
+    library: $("library").value.trim().toUpperCase(), secure: $("secure").checked,
+  };
+}
+
+$("remoteForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const message = $("remoteMessage");
+  message.textContent = "";
+  $("connect").disabled = true;
+  $("connect").textContent = "Listing…";
+  try {
+    const survey = await api("POST", "/api/remote/survey", login());
+    state.survey = survey;
+    state.objects = survey.objects;
+    state.chosen = new Set();
+    state.storage = survey.storage;
+    $("restoreTo").value = survey.library;
+    $("listedFrom").textContent = `${survey.library} on ${survey.host}: ${count(survey.objects.length)} objects, ${bytes(survey.objects.reduce((s, o) => s + o.size, 0))} there`
+      + (survey.encrypted ? "" : " · the connection isn't encrypted (its FTP server offers no TLS)") + (survey.here ? ` · ${survey.library} is a library here already: objects received replace its own` : "");
+    const kinds = [...new Set(survey.objects.map(o => o.kind))].sort();
+    $("kind").replaceChildren(el("option", { value: "" }, "Every kind"), el("option", { value: "*receivable" }, "Everything receivable"), ...kinds.map(k => el("option", { value: k }, k)));
+    $("objectsCard").classList.remove("hidden");
+    drawRows();
+    drawRoom();
+  } catch (error) { message.textContent = error.message; }
+  $("connect").disabled = false;
+  $("connect").textContent = "Connect and list";
+});
+
+function shown() {
+  const text = $("filter").value.trim().toUpperCase();
+  const kind = $("kind").value;
+  const rows = state.objects.filter(o =>
+    (kind === "" || (kind === "*receivable" ? o.receivable : o.kind === kind))
+    && (text === "" || o.name.includes(text) || o.text.toUpperCase().includes(text)));
+  const by = state.sort, sign = state.descending ? -1 : 1;
+  rows.sort((a, b) => (typeof a[by] === "number" ? a[by] - b[by] : String(a[by]).localeCompare(String(b[by]))) * sign || a.name.localeCompare(b.name));
+  return rows;
+}
+
+function drawRows() {
+  const rows = shown();
+  const body = $("rows");
+  body.replaceChildren(...rows.slice(0, SHOWN).map(o => {
+    const box = el("input", { type: "checkbox", "aria-label": `Receive ${o.name}` });
+    box.checked = state.chosen.has(key(o));
+    box.disabled = !o.receivable;
+    const row = el("tr", { class: (o.receivable ? "" : "no") + (box.checked ? " sel" : "") },
+      el("td", null, box),
+      el("td", { class: "name" }, o.name),
+      el("td", null, o.kind + (o.members > 1 ? ` (${o.members} members)` : "")),
+      el("td", { class: "text" }, o.text),
+      el("td", { class: "num" }, o.type === "*FILE" && o.receivable && !o.kind.includes("ogical") && !o.kind.startsWith("SQL view") && !o.kind.startsWith("SQL index") ? count(o.records) + (o.deleted ? ` (+${count(o.deleted)} deleted)` : "") : ""),
+      el("td", { class: "num" }, bytes(o.size)),
+      el("td", { class: "num" }, o.receivable ? bytes($("withData").checked ? o.estimate : o.bare) : "not received"));
+    box.addEventListener("change", () => {
+      if (box.checked) state.chosen.add(key(o)); else state.chosen.delete(key(o));
+      row.classList.toggle("sel", box.checked);
+      drawRoom();
+    });
+    return row;
+  }));
+  const receivable = rows.filter(o => o.receivable).length;
+  $("shownNote").textContent = `${count(rows.length)} shown (${count(receivable)} receivable, about ${bytes(estimateOf(rows.filter(o => o.receivable)))} here)`
+    + (rows.length > SHOWN ? ` · the first ${count(SHOWN)} are listed; "Choose shown" takes them all` : "");
+}
+
+$("filter").addEventListener("input", drawRows);
+$("kind").addEventListener("change", drawRows);
+$("withData").addEventListener("change", () => { drawRows(); drawRoom(); });
+$("selShown").addEventListener("click", () => { for (const o of shown()) if (o.receivable) state.chosen.add(key(o)); drawRows(); drawRoom(); });
+$("unselShown").addEventListener("click", () => { for (const o of shown()) state.chosen.delete(key(o)); drawRows(); drawRoom(); });
+$("selNone").addEventListener("click", () => { state.chosen.clear(); drawRows(); drawRoom(); });
+for (const button of document.querySelectorAll("th button[data-sort]")) {
+  button.addEventListener("click", () => {
+    const by = button.dataset.sort;
+    state.descending = state.sort === by ? !state.descending : by !== "name" && by !== "kind";
+    state.sort = by;
+    drawRows();
+  });
+}
+
+// ---- receiving ----
+
+$("pull").addEventListener("click", async () => {
+  const message = $("pullMessage");
+  message.textContent = "";
+  const chosen = chosenObjects();
+  const names = [...new Set(chosen.map(o => o.name))];
+  const receivable = [...new Set(state.objects.filter(o => o.receivable).map(o => o.name))];
+  const request = { ...login(), data: $("withData").checked, restoreTo: $("restoreTo").value.trim().toUpperCase() };
+  // Most of the library: ask for it all but what's left out, which the remote system lists in one go.
+  if (names.length > receivable.length / 2) {
+    const taken = new Set(names);
+    request.all = true;
+    request.omit = receivable.filter(n => !taken.has(n));
+  } else request.objects = names;
+  state.estimateAtStart = estimateOf(chosen);
+  state.chosenAtStart = chosen.length;
+  try {
+    follow(await api("POST", "/api/remote/pull", request));
+  } catch (error) { message.textContent = error.message; }
+});
+
+$("cancel").addEventListener("click", async () => {
+  $("cancel").disabled = true;
+  try { await api("POST", "/api/remote/cancel"); } catch (error) { $("pState").textContent = error.message; }
+});
+
+function follow(transfer) {
+  state.next = 0;
+  state.running = true;
+  $("log").replaceChildren();
+  $("pResult").className = "banner hidden";
+  $("progressCard").classList.remove("hidden");
+  $("progressCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  drawProgress(transfer);
+  clearInterval(state.timer);
+  state.timer = setInterval(poll, 1000);
+}
+
+async function poll() {
+  try {
+    drawProgress(await api("GET", "/api/remote/pull?after=" + state.next));
+  } catch (error) { $("pState").textContent = error.message; }
+}
+
+function drawProgress(t) {
+  const done = t.restored + t.failed;
+  const of = state.chosenAtStart || t.chosen || 0;
+  $("progressWhat").textContent = `${t.what}, started by ${t.user}`;
+  $("pObjects").textContent = count(done) + (of ? ` of ${count(of)}` : "");
+  $("pObjectsSub").textContent = t.failed ? `${count(t.failed)} not restored` : "";
+  $("pRecords").textContent = count(t.records);
+  $("pRate").textContent = t.seconds > 2 && t.records ? `${count(Math.round(t.records / t.seconds))} a second` : "";
+  const grew = Math.max(0, t.storage.database - t.databaseAtStart);
+  $("pGrew").textContent = bytes(grew);
+  $("pGrewSub").textContent = state.estimateAtStart ? `of about ${bytes(state.estimateAtStart)} estimated` : `database now ${bytes(t.storage.database)}`;
+  $("pTime").textContent = `${Math.floor(t.seconds / 60)}:${String(t.seconds % 60).padStart(2, "0")}`;
+  $("pFree").textContent = t.storage.free === null || t.storage.free === undefined ? "" : `${bytes(t.storage.free)} free`;
+  const bar = $("pBar");
+  const share = of ? Math.min(100, done / of * 100) : state.estimateAtStart ? Math.min(100, grew / state.estimateAtStart * 100) : 0;
+  bar.classList.toggle("busy", t.running && share === 0);
+  $("pBarFill").style.width = (t.running ? share : 100) + "%";
+  const log = $("log");
+  const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  for (const line of t.lines) log.append(el("div", { class: line.includes("not restored") ? "bad" : "" }, line));
+  while (log.childElementCount > 2000) log.firstElementChild.remove();
+  if (atEnd) log.scrollTop = log.scrollHeight;
+  state.next = t.next;
+  state.storage = t.storage;
+  $("cancel").disabled = !t.running || t.cancelling;
+  $("pState").textContent = t.running ? (t.cancelling ? "Ending after the file it's on…" : "Reading descriptions, then receiving object by object.") : "";
+  if (!t.running) {
+    clearInterval(state.timer);
+    state.running = false;
+    const result = $("pResult");
+    result.className = "banner " + (t.ok ? "ok" : "error");
+    result.textContent = t.message;
+  }
+  drawRoom();
+}
+
+start().catch(() => {});
+</script>
+</body>
+</html>

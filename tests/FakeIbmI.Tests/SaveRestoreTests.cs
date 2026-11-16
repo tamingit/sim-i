@@ -178,6 +178,46 @@ public class SaveRestoreTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void TheFilesAProgramUses()
+    {
+        using var machine = Machine.Open();
+        var job = new BatchJob("PRTUSER", CancellationToken.None);
+        machine.Save(new Member("QGPL", "QDDSSRC", "CUSTPF", "PF", Machine.PhysicalDds("CUSTREC", CustomerFields, [("CUSTNO", false)], unique: true)));
+        Assert.True(machine.Run("CRTPF FILE(QGPL/CUSTPF) SRCFILE(QGPL/QDDSSRC)", job).Ok);
+        machine.Save(new Member("QGPL", "QDDSSRC", "CUSTBYNAME", "LF", Machine.LogicalDds([new Machine.LogicalFormat("CUSTREC", "CUSTPF", [], [("NAME", false)], [])], unique: false)));
+        Assert.True(machine.Run("CRTLF FILE(QGPL/CUSTBYNAME) SRCFILE(QGPL/QDDSSRC)", job).Ok);
+        Assert.True(machine.Run("RUNSQL SQL('INSERT INTO QGPL.CUSTPF (CUSTNO, NAME) VALUES (1, ''Acme''), (2, ''Bolt'')')", job).Ok);
+        machine.Save(new Member("QGPL", "QRPGLESRC", "CUSTRPT", "SQLRPGLE", """
+            **free
+            dcl-f custbyname keyed;
+            dcl-f orders usage(*update) keyed;
+            dcl-f custdsp workstn;
+            dcl-ds item extname('ITEMPF') qualified end-ds;
+            dcl-s n int(10);
+            exec sql select count(*) into :n from mylib.invoices i join custpf c on c.custno = i.custno where i.paid = 'N';
+            exec sql declare c1 cursor for select name from custpf;
+            exec sql fetch next from c1 into :n;
+            exec sql update orders set status = 'X' where current of c1;
+            *inlr = *on;
+            """));
+        var files = machine.FilesOf("QGPL", "CUSTRPT")!;
+        Assert.Equal(
+            ["CUSTBYNAME DCL-F keyed, input", "ORDERS DCL-F keyed, update", "CUSTDSP DCL-F display file", "INVOICES SQL embedded SQL", "CUSTPF SQL embedded SQL", "ITEMPF EXTNAME describes ITEM"],
+            files.Select(f => $"{f.Name} {f.How} {f.Use}"));
+        // What's here: the logical file with its physical file and its records; the rest isn't.
+        var byName = files.Single(f => f.Name == "CUSTBYNAME");
+        Assert.Equal(("Logical file", "QGPL", 2L), (byName.Kind, byName.HereLibrary, byName.Records));
+        Assert.Equal(["CUSTPF"], byName.BasedOn);
+        Assert.Equal("Physical file", files.Single(f => f.Name == "CUSTPF").Kind);
+        Assert.Equal("MYLIB", files.Single(f => f.Name == "INVOICES").Library);
+        Assert.All(files.Where(f => f.Name is "ORDERS" or "INVOICES" or "ITEMPF" or "CUSTDSP"), f => Assert.Null(f.Kind));
+        Assert.False(files.Single(f => f.Name == "CUSTDSP").Database);
+        Assert.Null(machine.FilesOf(null, "NOSUCH"));
+        // Fixed form's SQL, between C/EXEC SQL and C/END-EXEC.
+        Assert.Equal([("CUSTPF", (string?)null, 2)], Machine.SqlTables("     C                   EVAL      X = 1\n     C/EXEC SQL\n     C+ DELETE FROM CUSTPF WHERE CUSTNO = :X\n     C/END-EXEC\n".Replace("\\n", "\n")));
+    }
+
+    [Fact]
     public void TheCommandsNeedALibraryASystemAndAUser()
     {
         using var machine = Machine.Open();

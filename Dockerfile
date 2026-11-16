@@ -27,7 +27,7 @@ WORKDIR /app
 COPY --from=build /app ./
 RUN mkdir /certs /ifs && chown app /certs /ifs
 USER app
-EXPOSE 2323 992 8474 9474 8475 9475 8476 9476 449 8080
+EXPOSE 2323 992 8474 9474 8475 9475 8476 9476 449 8080 4711
 ENTRYPOINT ["dotnet", "FakeIbmI.dll", "--bind", "0.0.0.0", "--port", "2323", "--print-port", "8474", "--signon-port", "8476", "--command-port", "8475", "--mapper-port", "449", \
-    "--web-port", "8080", "--ifs-dir", "/ifs", \
+    "--web-port", "8080", "--debug-port", "4711", "--ifs-dir", "/ifs", \
     "--tls-port", "992", "--print-tls-port", "9474", "--signon-tls-port", "9476", "--command-tls-port", "9475", "--tls-cert", "/certs/fake-ibmi.pfx"]

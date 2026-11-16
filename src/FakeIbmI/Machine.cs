@@ -58,6 +58,9 @@ public sealed partial class Machine : IDisposable
 
     public Store Store { get; }
 
+    /// <summary>What stops a running program for a debugger (see <see cref="Debugging.DapServer"/>).</summary>
+    internal Debugging.DebugEngine Debugger { get; } = new();
+
     /// <summary>The integrated file system: a folder on the host.</summary>
     public Ifs Ifs { get; }
 
