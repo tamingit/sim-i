@@ -2,7 +2,7 @@
 
 A development and test emulator for IBM i code. It runs RPG, CL, DDS and embedded SQL against PostgreSQL, serves 5250 sessions and IBM's host servers, takes copies of files from a real IBM i, and lets you edit and debug from a browser or VS Code. It is for developing and testing away from the real system; it does not replace one: compiled objects don't run on it, and what it doesn't support is listed in [docs/rpg-support.md](docs/rpg-support.md).
 
-It speaks TN5250E over Telnet, and four of IBM's host servers: the port mapper, sign-on, remote command and Network Print. All but the port mapper can also listen for TLS. New here? Start with [docs/getting-started.md](docs/getting-started.md).
+It speaks TN5250E over Telnet, and five of IBM's host servers: the port mapper, sign-on, remote command, Network Print and the file server. All but the port mapper can also listen for TLS. New here? Start with [docs/getting-started.md](docs/getting-started.md).
 
 It was split out of [GreenGlow Connect](https://github.com/tamingit/greenglow), where it ran the server's and browser's tests and the public demo.
 
@@ -30,7 +30,7 @@ It was split out of [GreenGlow Connect](https://github.com/tamingit/greenglow), 
 
 Password levels 0 and 1 use DES; 2 and 3 use SHA-1. Sim i runs at level 2.
 
-- **Port mapper (port 449):** tells a client which port a service is on, as JTOpen and ACS ask before connecting to a host server. It knows `as-signon`, `as-rmtcmd` and `as-netprt` when they run, and answers that there's no such service for anything else, including the TLS names (`as-signon-s`). It logs each name asked, so the log shows which services a client wants.
+- **Port mapper (port 449):** tells a client which port a service is on, as JTOpen and ACS ask before connecting to a host server. It knows `as-signon`, `as-rmtcmd`, `as-netprt` and `as-file` when they run, and answers that there's no such service for anything else, including the TLS names (`as-signon-s`). It logs each name asked, so the log shows which services a client wants.
 - **Sign-on (port 8476):**
   - **Sign-on:** checks the user and password, and answers with the sign-on dates and the server's CCSID (37). It claims to be IBM i 7.5.
   - **Change password:** checks the old password, and the new one: it can't be empty, too long, or the same as the old one.
@@ -43,6 +43,7 @@ Password levels 0 and 1 use DES; 2 and 3 use SHA-1. Sim i runs at level 2.
 
   The log names each command and program, with the program's parameter sizes and, for `QSYCKUFU`, the function checked. It never logs a command's parameters or other programs' data, which can hold passwords.
 - **Network Print (port 8474):** it lists placeholder spooled files and sends their contents. After those come the spooled files RPG programs printed, as *SCS files (see [RPG](#rpg)).
+- **File server (port 8473):** the [integrated file system](#ifs) by path, as JTOpen's `IFSFileInputStream` and ACS read it. It exchanges attributes (datastream level 24, path names in UTF-16), opens a file for reading with its dates and size, reads it, and closes it. A refusal has the IBM i's return code: 2 no such file, 3 no such folder, 4 a folder opened as a file, 6 no such handle, 13 a path that leads out of the IFS. Every layout was checked against a real IBM i. *Not supported yet* (return code 23): opening for writing, creating files, and listing folders. The log names each request and path, never a file's contents.
 
 <a id="rpg"></a>**RPG, SQL and source**
 
@@ -158,7 +159,7 @@ docker run --rm --env-file .env -e SIM_I_DATABASE="Host=db.example;Database=simi
 With the .NET 10 SDK:
 
 ```bash
-dotnet run --project src/SimI -- --port 2323 --print-port 8474 --signon-port 8476 --command-port 8475 --mapper-port 449
+dotnet run --project src/SimI -- --port 2323 --print-port 8474 --signon-port 8476 --command-port 8475 --file-port 8473 --mapper-port 449
 ```
 
 Port 449 is below 1024, so outside a container Sim i needs root, or `CAP_NET_BIND_SERVICE`, to listen there.
@@ -168,15 +169,16 @@ Port 449 is below 1024, so outside a container Sim i needs root, or `CAP_NET_BIN
   - `--print-port`: the Network Print port (default: no Network Print server).
   - `--signon-port`: the sign-on port (default: no sign-on server).
   - `--command-port`: the remote command port (default: no remote command server).
+  - `--file-port`: the file server's port (default: no file server).
   - `--mapper-port`: the port mapper's port (default: no port mapper). Clients only ever look for it on 449.
-  - `--tls-port`, `--signon-tls-port`, `--command-tls-port`, `--print-tls-port`: TLS ports for Telnet, sign-on, remote command and Network Print (default: none). Each but the first needs its server's plain port too.
+  - `--tls-port`, `--signon-tls-port`, `--command-tls-port`, `--print-tls-port`, `--file-tls-port`: TLS ports for Telnet, sign-on, remote command, Network Print and the file server (default: none). Each but the first needs its server's plain port too.
   - `--tls-cert`: the certificate for the TLS ports (default: one made for this run only).
   - `--tls-name`: another name or address for a certificate Sim i makes. Repeat it, or separate names with commas.
   - `--database`: the PostgreSQL database's connection string (`Host=...;Port=...;Database=...;Username=...;Password=...`). Required, except with `--check`, which makes a database of its own on that server (or the scratch server) and drops it after.
   - `--source-dir`: a folder of source to read at start-up, a folder for each library (see [RPG](#rpg)).
   - `--check`: with `--source-dir`, only check the source, report what's in error or isn't supported and exit (code 3 when something is).
   - `--env-file`: the file of settings, such as the [users](#users) (default: `.env`, when there is one).
-  - **Settings:** `.env` also sets the address and every port: `SIM_I_BIND`, `SIM_I_PORT`, `SIM_I_PRINT_PORT`, `SIM_I_SIGNON_PORT`, `SIM_I_COMMAND_PORT`, `SIM_I_MAPPER_PORT`, the four `SIM_I_*_TLS_PORT`s, `SIM_I_TLS_CERT`, `SIM_I_TLS_NAMES`, `SIM_I_DATABASE`, `SIM_I_SOURCE_DIR`, `SIM_I_IFS_DIR` and `SIM_I_WEB_PORT`. The options above win over them, and a blank port leaves that server off. The image sets its own address and ports, so they don't apply in Docker: publish the ports instead.
+  - **Settings:** `.env` also sets the address and every port: `SIM_I_BIND`, `SIM_I_PORT`, `SIM_I_PRINT_PORT`, `SIM_I_SIGNON_PORT`, `SIM_I_COMMAND_PORT`, `SIM_I_FILE_PORT`, `SIM_I_MAPPER_PORT`, the five `SIM_I_*_TLS_PORT`s, `SIM_I_TLS_CERT`, `SIM_I_TLS_NAMES`, `SIM_I_DATABASE`, `SIM_I_SOURCE_DIR`, `SIM_I_IFS_DIR` and `SIM_I_WEB_PORT`. The options above win over them, and a blank port leaves that server off. The image sets its own address and ports, so they don't apply in Docker: publish the ports instead.
   - `--bind`: the address to listen on (default `127.0.0.1`).
   - `--trace`: logs each Telnet negotiation step, and each record's length. It never logs a record's contents, or the value of a NEW-ENVIRON variable that can hold a secret (`IBMSUBSPW`, `IBMRSEED`).
 - **Listening address:** by default it listens on loopback only. The image passes `--bind 0.0.0.0` so it can be reached from outside the container. Publish it on `127.0.0.1`, as above, unless you mean other machines to reach it.

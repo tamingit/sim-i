@@ -3,11 +3,12 @@
 //       [--mapper-port 449] [--env-file .env] [--bind 0.0.0.0] [--trace]
 // --print-port also runs its Network Print server (printer output), for PRTUSER / Secret12.
 // --signon-port also runs its sign-on server, for the same user and password, which it can change.
+// --file-port also runs its file server (as-file): the integrated file system by path, read-only for now.
 // --command-port also runs its remote command server, which answers every command and program call
 //     with success (and zeros for output), running nothing.
 // --mapper-port also runs its port mapper, which tells clients the other servers' ports.
-// --tls-port, --signon-tls-port, --print-tls-port and --command-tls-port add TLS ports
-//     (IBM's: 992, 9476, 9474, 9475).
+// --tls-port, --signon-tls-port, --print-tls-port, --command-tls-port and --file-tls-port add TLS ports
+//     (IBM's: 992, 9476, 9474, 9475, 9473).
 //     --tls-cert names a PKCS #12 file for them, made (with a .crt to trust) when it's missing;
 //     without it, a certificate is made for this run only. --tls-name adds names to one it makes.
 // --env-file reads settings from a file (default: .env, when there is one); the environment wins.
@@ -89,6 +90,11 @@ try
         : null;
     if (command is not null) Console.WriteLine($"Sim i remote command server listening on port {command.Port}{TlsText(command.TlsPort)}");
 
+    await using var files = options.FilePort is { } filePort
+        ? await FileServer.StartAsync(machine.Ifs, filePort, Log, options.Bind, users, TlsOn(options.FileTlsPort))
+        : null;
+    if (files is not null) Console.WriteLine($"Sim i file server listening on port {files.Port}{TlsText(files.TlsPort)}");
+
     await using var web = options.WebPort is { } webPort
         ? await WebServer.StartAsync(webPort, Log, options.Bind, users, machine)
         : null;
@@ -106,6 +112,8 @@ try
     if (print?.TlsPort is { } printTls) services["as-netprt-s"] = printTls;
     if (signon is not null) services["as-signon"] = signon.Port;
     if (signon?.TlsPort is { } signonTls) services["as-signon-s"] = signonTls;
+    if (files is not null) services["as-file"] = files.Port;
+    if (files?.TlsPort is { } fileTls) services["as-file-s"] = fileTls;
     await using var mapper = options.MapperPort is { } mapperPort
         ? await PortMapper.StartAsync(mapperPort, services, Log, options.Bind)
         : null;
