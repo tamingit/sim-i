@@ -16,5 +16,5 @@ TestResults/
 .env.*
 !.env.example
 
-# The libraries' SQLite databases (FAKE_IBMI_DATABASE_DIR in .env.example)
+# The libraries' SQLite databases (SIM_I_DATABASE_DIR in .env.example)
 /data/

@@ -3,8 +3,8 @@ name: Release
 # A published GitHub release runs the tests, then builds the image and pushes it to GitHub's
 # container registry:
 #
-#   vX.Y.Z-beta or vX.Y.Z-beta.N  →  ghcr.io/tamingit/fake-ibmi:X.Y.Z-beta.N  and  :beta
-#   vX.Y.Z                        →  ghcr.io/tamingit/fake-ibmi:X.Y.Z         and  :latest
+#   vX.Y.Z-beta or vX.Y.Z-beta.N  →  ghcr.io/tamingit/sim-i:X.Y.Z-beta.N  and  :beta
+#   vX.Y.Z                        →  ghcr.io/tamingit/sim-i:X.Y.Z         and  :latest
 #
 # Any other tag is refused, and so is a release whose commit isn't on main.
 #
@@ -19,11 +19,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: fake-ibmi-release-${{ github.event.release.tag_name }}
+  group: sim-i-release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/tamingit/fake-ibmi
+  IMAGE: ghcr.io/tamingit/sim-i
 
 jobs:
   release:
@@ -35,13 +35,13 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: fakeibmi
-          POSTGRES_PASSWORD: fakeibmi
-          POSTGRES_DB: fakeibmi
+          POSTGRES_USER: simi
+          POSTGRES_PASSWORD: simi
+          POSTGRES_DB: simi
         ports:
           - 54329:5432
         options: >-
-          --health-cmd "pg_isready -U fakeibmi"
+          --health-cmd "pg_isready -U simi"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
@@ -83,7 +83,7 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Tests
-        run: dotnet test FakeIbmI.slnx
+        run: dotnet test SimI.slnx
 
       - name: Sign in to GitHub's registry
         uses: docker/login-action@v3
@@ -104,6 +104,6 @@ jobs:
           tags: ${{ steps.tag.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=A scripted fake IBM i: 5250 Telnet and Network Print
+            org.opencontainers.image.description=Sim i, a development and test emulator for IBM i code: 5250 Telnet and Network Print
             org.opencontainers.image.version=${{ steps.tag.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
