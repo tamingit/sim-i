@@ -1,11 +1,11 @@
 # RPG: what's checked and what isn't supported
 
-The fake checks RPG source in two ways, as an IBM i's compiler would. What it finds is shown on the member's diagnostics screen, printed by `--check`, and logged when source is imported.
+Sim i checks RPG source in two ways, as an IBM i's compiler would. What it finds is shown on the member's diagnostics screen, printed by `--check`, and logged when source is imported.
 
 - **Errors**: source an IBM i's compiler rejects. Nothing is made from the member: `CRTBNDRPG` fails with `RNS9310`, `CRTSQLRPGI` with `SQL9001`, and binding with `CPF5D04`.
-- **Not supported**: real RPG that the fake can't run. The program is still made, and reaching one of these lines ends it with a message naming the line.
+- **Not supported**: real RPG that Sim i can't run. The program is still made, and reaching one of these lines ends it with a message naming the line.
 
-The lists below are checked against ILE RPG on IBM i 7.5. The words the fake knows to be RPG are in `src/FakeIbmI/Rpg/RpgLanguage.cs`. A word in none of those lists is an error, not "not supported".
+The lists below are checked against ILE RPG on IBM i 7.5. The words Sim i knows to be RPG are in `src/SimI/Rpg/RpgLanguage.cs`. A word in none of those lists is an error, not "not supported".
 
 ## Errors
 
@@ -49,8 +49,8 @@ The lists below are checked against ILE RPG on IBM i 7.5. The words the fake kno
 
 **What isn't checked**
 
-These would fail on an IBM i but the fake doesn't catch them yet:
-- Lengths: assigning a longer field to a shorter one is fine in RPG, but passing a `char(10)` by reference to a `char(20)` parameter isn't, and the fake only checks the kind of type (characters, number, date).
+These would fail on an IBM i but Sim i doesn't catch them yet:
+- Lengths: assigning a longer field to a shorter one is fine in RPG, but passing a `char(10)` by reference to a `char(20)` parameter isn't, and Sim i only checks the kind of type (characters, number, date).
 - A name shared by a record format and a procedure or variable.
 - SQL syntax errors in embedded SQL. The SQL is translated for PostgreSQL, and what it won't take is reported as "not supported".
 - Binding is looser than an IBM i's. A procedure is found in any service program, not only through `BNDDIR`.
@@ -84,7 +84,7 @@ Beyond expressions, declarations and the usual free-form operations:
 - **Source as the compiler reads it:** columns 1 to 5 are ignored, a line with only its spec letter is empty, a directive can follow a spec letter in column 6, names can start with `@`, `#` or `$`, and date and time formats can name their separator (`*USA/`, `*ISO-`, `*YMD.`, `*HMS&`).
 - **Data structures are bytes**, with IBM i's layouts (packed, zoned, binary, integer, float, varying, dates as ISO text). Subfields overlay each other (`OVERLAY` with a position or `*NEXT`, `POS` with a number or a named constant), structures move as characters, and a bad zoned or packed value is a decimal-data error.
 - **Pointers:** `POINTER`, `BASED`, `%ADDR`, `%ALLOC`, `%REALLOC`, `DEALLOC`, `%STR` (and as a target), arithmetic and `*NULL`.
-- **`EXTPROC`** prototypes call procedures of the program or of a service program by their external name, or the fake's own natives:
+- **`EXTPROC`** prototypes call procedures of the program or of a service program by their external name, or Sim i's own natives:
   - The integrated file system's APIs: `open`, `read`, `write`, `close`, `lseek`, `unlink`, `access`, `mkdir`, `rmdir`, `rename`, `stat`, `opendir`/`readdir`/`closedir`, with IBM i's flag and errno values.
   - `__errno`, `strerror`, `sleep`, `usleep`, `system` and `getenv`.
   - `OPTIONS(*STRING)`, `*OMIT` and `%OMITTED` work with them.
@@ -126,7 +126,7 @@ Beyond expressions, declarations and the usual free-form operations:
 
 ## Display and printer files
 
-DDS for display files (`CRTDSPF`) and printer files (`CRTPRTF`) is read from its columns. What the fake can't show is reported as not supported; the file is still made.
+DDS for display files (`CRTDSPF`) and printer files (`CRTPRTF`) is read from its columns. What Sim i can't show is reported as not supported; the file is still made.
 
 **Supported**
 - Records and fields: constants, named fields with usage O, I, B, H and P (program-to-system), line and position (or +n), data types A, S, Y and the like; dates, times and timestamps as their text; reference fields (`REF`, `REFFLD`, R in column 29) from database files or other display files.
@@ -153,11 +153,11 @@ CL programs (`CLLE`, `CLP`) are run command by command; the program's own comman
 - Files: `DCLF` (with `OPNID`) of a display file, shown and read with `SNDF`, `RCVF` and `SNDRCVF` (with `&IN01`–`&IN99`), or of a database file, read with `RCVF` in its key's order to `CPF0864`; `CLOSE`.
 - Data areas and the job: `RTVDTAARA` (with a substring), `CHGDTAARA`, `RTVJOBA`, `RTVSYSVAL`, `RTVMBRD`, `CVTDAT`.
 - Messages: `SNDPGMMSG` (text, or a message file's message with `MSGDTA` in `&1`; `*ESCAPE` ends the program; `TOPGMQ(*SAME)` goes to the message subfile), `SNDUSRMSG` (the reply, or its default with nobody to answer), `RCVMSG` (the escape message `MONMSG` caught, or the last one sent), `RMVMSG`, message files (`CRTMSGF`, `ADDMSGD`, `CHGMSGD`, `RMVMSGD`, `DLTMSGF`).
-- Receiving from a real IBM i: `SAVRSTLIB` and `SAVRSTOBJ` (`LIB`, `OBJ`, `OBJTYPE`, `OMITOBJ`, `RSTLIB`, `RMTLOCNAME`, and the fake's own `RMTUSER`, `RMTPWD`, `PORT`, `SECCNN` and `DATA`) fetch files with their records, logical files, indexes, views, source members, data areas and message files: see the README.
+- Receiving from a real IBM i: `SAVRSTLIB` and `SAVRSTOBJ` (`LIB`, `OBJ`, `OBJTYPE`, `OMITOBJ`, `RSTLIB`, `RMTLOCNAME`, and Sim i's own `RMTUSER`, `RMTPWD`, `PORT`, `SECCNN` and `DATA`) fetch files with their records, logical files, indexes, views, source members, data areas and message files: see the README.
 - Database files: `OVRDBF`/`DLTOVR` (the file a program's open gets), `OPNQRYF` (`QRYSLT`, `KEYFLD`, `MAPFLD`, `FORMAT`, `JFLD`, `JDFTVAL`, `GRPFLD`, `GRPSLT`, `OPNID`, with `%SST`, `%DIGITS`, `%SUM` and the like, `%RANGE`, `%VALUES`, `%WLDCRD`, `*CT`) read by the next program that opens the file, `CPYFRMQRYF`, `CLOF`, `CPYF` (`MBROPT`, `CRTFILE`, `FMTOPT`, `INCREL`), `CLRPFM`, `CRTDUPOBJ`, `CPYTOIMPF` and `CPYFRMIMPF` (delimited stream files).
 - `SBMJOB` runs its command in a job of its own while the program goes on.
 - Taken with nothing to do: authorities, members (`ADDPFM`, `RMVM`), `ALCOBJ`/`DLCOBJ`, `CHGJOB`, `DLYJOB`, commitment control, journals, subsystems, job and output queues, spooled-file housekeeping, data queues, `DSPFD`, `SIGNOFF` and the like.
 
 **Not supported**
 - `STRQMQRY` and `RUNQRY`, `RTVMSG`, files with more than one member, and `OPNQRYF` updates through the query (it's for reading).
-- QTEMP is one for all jobs (the fake has one database connection).
+- QTEMP is one for all jobs (Sim i has one database connection).

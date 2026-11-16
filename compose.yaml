@@ -1,33 +1,33 @@
-# The fake IBM i and its PostgreSQL:  docker compose up --build
+# Sim i and its PostgreSQL:  docker compose up --build
 # 5250 Telnet on 2323 and the host servers on IBM's own ports (see the Dockerfile); the web source
 # editor on http://localhost:8080 (sign on with a user profile, such as PRTUSER / Secret12).
-# The fake keeps everything in the postgres service's database: each library is a schema of it.
+# Sim i keeps everything in the postgres service's database: each library is a schema of it.
 # Volumes keep the database, the IFS and the TLS certificate between runs. To load source at
-# start-up, uncomment the source volume and FAKE_IBMI_SOURCE_DIR.
+# start-up, uncomment the source volume and SIM_I_SOURCE_DIR.
 
 services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_USER: fakeibmi
-      POSTGRES_PASSWORD: ${FAKE_IBMI_DB_PASSWORD:-fakeibmi}
-      POSTGRES_DB: fakeibmi
+      POSTGRES_USER: simi
+      POSTGRES_PASSWORD: ${SIM_I_DB_PASSWORD:-simi}
+      POSTGRES_DB: simi
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fakeibmi -d fakeibmi"]
+      test: ["CMD-SHELL", "pg_isready -U simi -d simi"]
       interval: 5s
       timeout: 3s
       retries: 20
 
-  fake-ibmi:
+  sim-i:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      FAKE_IBMI_DATABASE: "Host=postgres;Database=fakeibmi;Username=fakeibmi;Password=${FAKE_IBMI_DB_PASSWORD:-fakeibmi}"
-      # FAKE_IBMI_SOURCE_DIR: /source
+      SIM_I_DATABASE: "Host=postgres;Database=simi;Username=simi;Password=${SIM_I_DB_PASSWORD:-simi}"
+      # SIM_I_SOURCE_DIR: /source
     ports:
       # The port mapper tells clients the ports inside the container, so they're published unchanged.
       - "127.0.0.1:2323:2323"
@@ -40,14 +40,14 @@ services:
       - "127.0.0.1:9476:9476"
       - "127.0.0.1:449:449"
       - "127.0.0.1:8080:8080"
-      # The debug server, for VS Code (the extension in vscode/fake-ibmi).
+      # The debug server, for VS Code (the extension in vscode/sim-i).
       - "127.0.0.1:4711:4711"
     volumes:
-      - fake-ibmi-ifs:/ifs
-      - fake-ibmi-certs:/certs
+      - sim-i-ifs:/ifs
+      - sim-i-certs:/certs
       # - ./source:/source:ro
 
 volumes:
   postgres-data:
-  fake-ibmi-ifs:
-  fake-ibmi-certs:
+  sim-i-ifs:
+  sim-i-certs:
