@@ -41,6 +41,17 @@ internal sealed class RpgParser
         _scope = _program.Main;
     }
 
+    /// <summary>An expression on its own, as a debugger's watch or a breakpoint's condition is: a name, a subfield, a comparison, a built-in function.</summary>
+    public static Expr ParseExpression(string text)
+    {
+        var parser = new RpgParser("", null, null);
+        (parser._t, parser._p) = (RpgLexer.Tokens(text), 0);
+        if (parser.AtEnd) throw new FormatException("there's no expression");
+        var expression = parser.Expression();
+        if (!parser.AtEnd) throw new FormatException($"{text} isn't one expression");
+        return expression;
+    }
+
     /// <summary>
     /// Parses a member. <paramref name="prepareProblem"/> says why the database won't take a translated
     /// SQL statement (null when it will); without it, SQL is translated but not tried.

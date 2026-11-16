@@ -44,6 +44,7 @@
   header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
   header h1 { font-size: 16px; margin: 0; flex: 1; }
   header .who { color: var(--muted); font-size: 13px; }
+  header a { color: var(--accent); font-size: 13px; }
   main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
   aside { border-right: 1px solid var(--line); background: var(--panel); display: grid; grid-template-rows: auto auto 1fr; min-height: 0; }
   aside .tools { padding: 10px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
@@ -115,6 +116,7 @@
 <div id="app" class="hidden">
   <header>
     <h1>Fake IBM i source</h1>
+    <a href="/receive" title="Receive a library from a real IBM i">Receive from an IBM i</a>
     <span class="who" id="who"></span>
     <button id="signoff">Sign off</button>
   </header>

@@ -21,7 +21,7 @@ public sealed record Options(
     int Port, int? PrintPort, IPAddress Bind, bool Trace = false, int? SignonPort = null, int? MapperPort = null,
     int? TlsPort = null, int? SignonTlsPort = null, int? PrintTlsPort = null, string? TlsCert = null, string? TlsNames = null,
     string? EnvFile = null, int? CommandPort = null, int? CommandTlsPort = null,
-    string? Database = null, string? SourceDir = null, bool Check = false, int? WebPort = null, string? IfsDir = null)
+    string? Database = null, string? SourceDir = null, bool Check = false, int? WebPort = null, string? IfsDir = null, int? DebugPort = null)
 {
     /// <summary>Whether any server listens for TLS, and so needs a certificate.</summary>
     public bool AnyTls => TlsPort is not null || SignonTlsPort is not null || PrintTlsPort is not null || CommandTlsPort is not null;
@@ -32,7 +32,7 @@ public sealed record Options(
         "FAKE_IBMI_BIND", "FAKE_IBMI_PORT", "FAKE_IBMI_PRINT_PORT", "FAKE_IBMI_SIGNON_PORT", "FAKE_IBMI_COMMAND_PORT",
         "FAKE_IBMI_MAPPER_PORT", "FAKE_IBMI_TLS_PORT", "FAKE_IBMI_PRINT_TLS_PORT", "FAKE_IBMI_SIGNON_TLS_PORT",
         "FAKE_IBMI_COMMAND_TLS_PORT", "FAKE_IBMI_TLS_CERT", "FAKE_IBMI_TLS_NAMES", "FAKE_IBMI_SOURCE_DIR", "FAKE_IBMI_DATABASE",
-        "FAKE_IBMI_WEB_PORT", "FAKE_IBMI_IFS_DIR", "FAKE_IBMI_REMOTE_USER", "FAKE_IBMI_REMOTE_PASSWORD",
+        "FAKE_IBMI_WEB_PORT", "FAKE_IBMI_IFS_DIR", "FAKE_IBMI_REMOTE_USER", "FAKE_IBMI_REMOTE_PASSWORD", "FAKE_IBMI_DEBUG_PORT",
     ];
 
     /// <summary>The file --env-file names, which has to be known before the settings in it can be read.</summary>
@@ -63,7 +63,7 @@ public sealed record Options(
             TlsNames: Setting("FAKE_IBMI_TLS_NAMES"), CommandPort: SettingPort("FAKE_IBMI_COMMAND_PORT"),
             CommandTlsPort: SettingPort("FAKE_IBMI_COMMAND_TLS_PORT"),
             Database: Setting("FAKE_IBMI_DATABASE"), SourceDir: Setting("FAKE_IBMI_SOURCE_DIR"),
-            WebPort: SettingPort("FAKE_IBMI_WEB_PORT"), IfsDir: Setting("FAKE_IBMI_IFS_DIR"));
+            WebPort: SettingPort("FAKE_IBMI_WEB_PORT"), IfsDir: Setting("FAKE_IBMI_IFS_DIR"), DebugPort: SettingPort("FAKE_IBMI_DEBUG_PORT"));
         for (var i = 0; i < args.Count; i++)
         {
             if (args[i] == "--trace")
@@ -97,6 +97,7 @@ public sealed record Options(
                 "--database" => options with { Database = value },
                 "--source-dir" => options with { SourceDir = value },
                 "--web-port" => options with { WebPort = PortValue() },
+                "--debug-port" => options with { DebugPort = PortValue() },
                 "--ifs-dir" => options with { IfsDir = value },
                 "--tls-name" => options with { TlsNames = options.TlsNames is null ? value : $"{options.TlsNames},{value}" },
                 "--bind" => options with
