@@ -4,11 +4,11 @@ namespace SimI;
 
 /// <summary>
 /// Sim i's command line: --port (2323), --print-port (none: no Network Print server),
-/// --signon-port (none: no sign-on server), --command-port (none: no remote command server),
+/// --signon-port (none: no sign-on server), --command-port (none: no remote command server), --file-port (none: no file server),
 /// --mapper-port (none: no port mapper), --bind
 /// (loopback; the container passes 0.0.0.0 so it can be reached from outside it) and --trace
 /// (log each Telnet negotiation step, and each record's length). For TLS: --tls-port,
-/// --signon-tls-port, --print-tls-port and --command-tls-port (each none), --tls-cert (a PKCS #12 file, made when
+/// --signon-tls-port, --print-tls-port, --command-tls-port and --file-tls-port (each none), --tls-cert (a PKCS #12 file, made when
 /// missing) and --tls-name (more names for a certificate it makes, comma-separated). --env-file
 /// names the file of settings, such as the users (default: .env, when there is one). --database
 /// is the PostgreSQL database's connection string (Host=...;Database=...;Username=...;Password=...), --source-dir a
@@ -21,10 +21,12 @@ public sealed record Options(
     int Port, int? PrintPort, IPAddress Bind, bool Trace = false, int? SignonPort = null, int? MapperPort = null,
     int? TlsPort = null, int? SignonTlsPort = null, int? PrintTlsPort = null, string? TlsCert = null, string? TlsNames = null,
     string? EnvFile = null, int? CommandPort = null, int? CommandTlsPort = null,
-    string? Database = null, string? SourceDir = null, bool Check = false, int? WebPort = null, string? IfsDir = null, int? DebugPort = null)
+    string? Database = null, string? SourceDir = null, bool Check = false, int? WebPort = null, string? IfsDir = null, int? DebugPort = null,
+    int? FilePort = null, int? FileTlsPort = null)
 {
     /// <summary>Whether any server listens for TLS, and so needs a certificate.</summary>
-    public bool AnyTls => TlsPort is not null || SignonTlsPort is not null || PrintTlsPort is not null || CommandTlsPort is not null;
+    public bool AnyTls => TlsPort is not null || SignonTlsPort is not null || PrintTlsPort is not null || CommandTlsPort is not null
+                          || FileTlsPort is not null;
 
     /// <summary>The environment variables that set the ports, the address and the certificate, as .env.example lists them.</summary>
     public static readonly string[] Variables =
@@ -33,6 +35,7 @@ public sealed record Options(
         "SIM_I_MAPPER_PORT", "SIM_I_TLS_PORT", "SIM_I_PRINT_TLS_PORT", "SIM_I_SIGNON_TLS_PORT",
         "SIM_I_COMMAND_TLS_PORT", "SIM_I_TLS_CERT", "SIM_I_TLS_NAMES", "SIM_I_SOURCE_DIR", "SIM_I_DATABASE",
         "SIM_I_WEB_PORT", "SIM_I_IFS_DIR", "SIM_I_REMOTE_USER", "SIM_I_REMOTE_PASSWORD", "SIM_I_DEBUG_PORT",
+        "SIM_I_FILE_PORT", "SIM_I_FILE_TLS_PORT",
     ];
 
     /// <summary>The file --env-file names, which has to be known before the settings in it can be read.</summary>
@@ -63,7 +66,8 @@ public sealed record Options(
             TlsNames: Setting("SIM_I_TLS_NAMES"), CommandPort: SettingPort("SIM_I_COMMAND_PORT"),
             CommandTlsPort: SettingPort("SIM_I_COMMAND_TLS_PORT"),
             Database: Setting("SIM_I_DATABASE"), SourceDir: Setting("SIM_I_SOURCE_DIR"),
-            WebPort: SettingPort("SIM_I_WEB_PORT"), IfsDir: Setting("SIM_I_IFS_DIR"), DebugPort: SettingPort("SIM_I_DEBUG_PORT"));
+            WebPort: SettingPort("SIM_I_WEB_PORT"), IfsDir: Setting("SIM_I_IFS_DIR"), DebugPort: SettingPort("SIM_I_DEBUG_PORT"),
+            FilePort: SettingPort("SIM_I_FILE_PORT"), FileTlsPort: SettingPort("SIM_I_FILE_TLS_PORT"));
         for (var i = 0; i < args.Count; i++)
         {
             if (args[i] == "--trace")
@@ -89,6 +93,8 @@ public sealed record Options(
                 "--mapper-port" => options with { MapperPort = PortValue() },
                 "--command-port" => options with { CommandPort = PortValue() },
                 "--command-tls-port" => options with { CommandTlsPort = PortValue() },
+                "--file-port" => options with { FilePort = PortValue() },
+                "--file-tls-port" => options with { FileTlsPort = PortValue() },
                 "--tls-port" => options with { TlsPort = PortValue() },
                 "--signon-tls-port" => options with { SignonTlsPort = PortValue() },
                 "--print-tls-port" => options with { PrintTlsPort = PortValue() },
@@ -114,6 +120,8 @@ public sealed record Options(
             throw new ArgumentException("--print-tls-port needs --print-port");
         if (options.CommandTlsPort is not null && options.CommandPort is null)
             throw new ArgumentException("--command-tls-port needs --command-port");
+        if (options.FileTlsPort is not null && options.FilePort is null)
+            throw new ArgumentException("--file-tls-port needs --file-port");
         if (options.Check && options.SourceDir is null) throw new ArgumentException("--check needs --source-dir");
         return options;
     }
