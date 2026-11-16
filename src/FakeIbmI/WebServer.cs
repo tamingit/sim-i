@@ -2,6 +2,11 @@
 // source members, and upload source files. Saving or uploading checks and compiles, as importing a
 // folder does; each member comes back as "error" (the compiler rejects it, or it didn't compile),
 // "warning" (the fake can't run some of it) or "ok", with what checking found, by line.
+//
+// Its second page (/receive) receives a library from a real IBM i, as SAVRSTLIB and SAVRSTOBJ do:
+// it lists what the remote library holds with each object's size there and an estimate of the room
+// it takes here, beside the room the database has, and then receives what's chosen while showing
+// how far it is.
 
 using System.Collections.Concurrent;
 using System.Net;
@@ -26,6 +31,23 @@ public sealed class WebServer : IAsyncDisposable
 
     private readonly WebApplication _app;
     private readonly ConcurrentDictionary<string, (string User, DateTime Expires)> _sessions = new();
+
+    /// <summary>The receive that's running, or the last one that ran: one at a time, as they share the database's room.</summary>
+    private Transfer? _transfer;
+    private readonly Lock _transferGate = new();
+
+    private sealed class Transfer(string id, string user, string what)
+    {
+        public string Id => id;
+        public string User => user;
+        public string What => what;
+        public Machine.ReceiveStatus Status { get; } = new();
+        public CancellationTokenSource Cancel { get; } = new();
+        public DateTime Started { get; } = DateTime.UtcNow;
+        public long DatabaseAtStart { get; init; }
+        public int Chosen { get; init; }
+        public volatile CommandResult? Result;
+    }
 
     private WebServer(WebApplication app)
     {
@@ -96,6 +118,15 @@ public sealed class WebServer : IAsyncDisposable
             await using var page = typeof(WebServer).Assembly.GetManifestResourceStream("Web/index.html")!;
             await page.CopyToAsync(context.Response.Body);
         });
+
+        _app.MapGet("/receive", async context =>
+        {
+            context.Response.ContentType = "text/html; charset=utf-8";
+            context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";
+            await using var page = typeof(WebServer).Assembly.GetManifestResourceStream("Web/receive.html")!;
+            await page.CopyToAsync(context.Response.Body);
+        });
+        MapReceive(log, machine);
 
         _app.MapPost("/api/signon", async context =>
         {
@@ -266,6 +297,258 @@ public sealed class WebServer : IAsyncDisposable
                 });
             }
             await context.Response.WriteAsJsonAsync(results);
+        }, changes: true));
+    }
+
+    // ---- receiving from a real IBM i ----
+
+    private sealed record RemoteRequest(string? Host, int? Port, string? User, string? Password, string? Library, bool? Secure,
+        bool? All, List<string>? Objects, List<string>? Omit, bool? Data, string? RestoreTo,
+        Dictionary<string, string>? Filters = null, List<string>? Libraries = null);
+
+    private static object Json((long Database, long? Free, long? Total) storage) => new { database = storage.Database, free = storage.Free, total = storage.Total };
+
+    private void MapReceive(Action<string> log, Machine machine)
+    {
+        // Who signs on to the remote system: the request's user and password, or the settings' (FAKE_IBMI_REMOTE_USER).
+        Machine.RemoteLogin? Login(RemoteRequest request, out string? problem)
+        {
+            var host = request.Host?.Trim() ?? "";
+            var user = request.User?.Trim().ToUpperInvariant() is { Length: > 0 } named ? named : machine.RemoteUser;
+            var password = request.Password is { Length: > 0 } given ? given : user == machine.RemoteUser ? machine.RemotePassword : null;
+            var port = request.Port ?? 21;
+            problem = host.Length == 0 || host.Any(c => char.IsWhiteSpace(c) || c is '/' or '(' or ')') ? "Name the remote system: its host name or address."
+                : port is < 1 or > 65535 ? "The port isn't one."
+                : string.IsNullOrEmpty(user) || string.IsNullOrEmpty(password) ? "The remote user and password are needed."
+                : (request.Libraries is { Count: > 0 } several ? several : [request.Library ?? ""]).Any(l => !Machine.IsName(l.Trim().ToUpperInvariant())) ? "Name the library."
+                : null;
+            return problem is null ? new Machine.RemoteLogin(host, port, user!, password!, request.Secure == true ? Remote.RemoteSecurity.Required : Remote.RemoteSecurity.Default) : null;
+        }
+        async Task<(RemoteRequest? Request, Machine.RemoteLogin? Login)> Read(HttpContext context)
+        {
+            var request = await context.Request.ReadFromJsonAsync<RemoteRequest>();
+            string? problem = "The request is empty.";
+            var login = request is null ? null : Login(request, out problem);
+            if (login is null)
+            {
+                context.Response.StatusCode = 400;
+                await context.Response.WriteAsJsonAsync(new { message = problem });
+            }
+            return (request, login);
+        }
+        object State(Transfer t, int after)
+        {
+            var (lines, count) = t.Status.Lines(after);
+            var result = t.Result;
+            return new
+            {
+                id = t.Id, what = t.What, user = t.User, running = result is null, cancelling = result is null && t.Cancel.IsCancellationRequested,
+                seconds = (int)(DateTime.UtcNow - t.Started).TotalSeconds, chosen = t.Chosen,
+                restored = t.Status.Restored, failed = t.Status.Failed, records = t.Status.Records,
+                lines, next = count, ok = result?.Ok, message = result?.Message,
+                storage = Json(machine.Store.Storage()), databaseAtStart = t.DatabaseAtStart,
+            };
+        }
+
+        _app.MapGet("/api/remote", Authorized((context, _) =>
+        {
+            Transfer? transfer;
+            lock (_transferGate) transfer = _transfer;
+            return context.Response.WriteAsJsonAsync(new
+            {
+                user = machine.RemoteUser, hasPassword = !string.IsNullOrEmpty(machine.RemotePassword),
+                storage = Json(machine.Store.Storage()), libraries = machine.Store.Libraries(),
+                transfer = transfer is null ? null : State(transfer, 0),
+            });
+        }));
+
+        // What the remote library holds, with sizes and estimates: nothing is received.
+        _app.MapPost("/api/remote/survey", Authorized(async (context, user) =>
+        {
+            var (request, login) = await Read(context);
+            if (request is null || login is null) return;
+            var library = request.Library!.Trim().ToUpperInvariant();
+            try
+            {
+                var (objects, encrypted) = await Task.Run(() => machine.Survey(login, library, new BatchJob(user, context.RequestAborted)));
+                log($"web: {user} listed {library} on {login.Host}: {objects.Count} objects");
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    library, host = login.Host, encrypted, here = machine.Store.HasLibrary(library), storage = Json(machine.Store.Storage()),
+                    objects = objects.Select(o => new
+                    {
+                        name = o.Name, type = o.Type, attribute = o.Attribute, kind = o.Kind, text = o.Text, receivable = o.Receivable, size = o.Size,
+                        records = o.Records, deleted = o.Deleted, members = o.Members, estimate = o.Estimate, bare = o.EstimateWithoutData,
+                    }),
+                });
+            }
+            catch (Exception e) when (e is Remote.RemoteException or IOException or System.Net.Sockets.SocketException)
+            {
+                context.Response.StatusCode = 502;
+                await context.Response.WriteAsJsonAsync(new { message = e.Message });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }, changes: true));
+
+        // The files a program uses, and what each is here.
+        _app.MapGet("/api/program/files", Authorized(async (context, user) =>
+        {
+            var name = context.Request.Query["name"].ToString().Trim().ToUpperInvariant();
+            var library = context.Request.Query["library"].ToString().Trim().ToUpperInvariant();
+            var files = Machine.IsName(name) ? machine.FilesOf(library.Length > 0 ? library : null, name) : null;
+            if (files is null)
+            {
+                context.Response.StatusCode = 404;
+                await context.Response.WriteAsJsonAsync(new { message = $"{name} isn't an RPG member or program on the fake IBM i: save its source first." });
+                return;
+            }
+            await context.Response.WriteAsJsonAsync(new
+            {
+                program = name, storage = Json(machine.Store.Storage()), remoteUser = machine.RemoteUser, hasRemotePassword = !string.IsNullOrEmpty(machine.RemotePassword),
+                files = files.Select(f => new
+                {
+                    name = f.Name, library = f.Library, how = f.How, use = f.Use, line = f.Line, database = f.Database, kind = f.Kind, hereLibrary = f.HereLibrary,
+                    records = f.Records, basedOn = f.BasedOn,
+                }),
+            });
+        }));
+
+        // Where files of these names are on the remote system (the first of the libraries that has each), with sizes and
+        // estimates, and with them the physical files their logical files are over.
+        _app.MapPost("/api/remote/files", Authorized(async (context, user) =>
+        {
+            var (request, login) = await Read(context);
+            if (request is null || login is null) return;
+            var libraries = (request.Libraries is { Count: > 0 } several ? several : [request.Library!]).Select(l => l.Trim().ToUpperInvariant()).Distinct().ToList();
+            var wanted = (request.Objects ?? []).Select(n => n.Trim().ToUpperInvariant()).Where(Machine.IsName).Distinct().ToList();
+            try
+            {
+                var found = new List<(string Library, Machine.SurveyedObject File, string? NeededBy)>();
+                await Task.Run(() =>
+                {
+                    var job = new BatchJob(user, context.RequestAborted);
+                    foreach (var library in libraries)
+                    {
+                        var missing = wanted.Where(n => !found.Any(f => f.File.Name == n)).ToList();
+                        if (missing.Count == 0) break;
+                        found.AddRange(machine.Survey(login, library, job, null, missing).Objects.Where(o => o.Type == "*FILE").Select(o => (library, o, (string?)null)));
+                    }
+                    // A logical file needs its physical files: they're looked up too, twice over (a view over a view).
+                    for (var round = 0; round < 2; round++)
+                    {
+                        var needed = found.SelectMany(f => f.File.BasedOn.Select(b => (Based: b.Split('/'), By: f.File.Name)))
+                            .Where(n => n.Based.Length == 2 && !found.Any(f => f.Library == n.Based[0] && f.File.Name == n.Based[1])).ToList();
+                        if (needed.Count == 0) break;
+                        foreach (var group in needed.GroupBy(n => n.Based[0]))
+                        {
+                            var names = group.Select(n => n.Based[1]).Distinct().ToList();
+                            foreach (var o in machine.Survey(login, group.Key, job, null, names).Objects.Where(o => o.Type == "*FILE"))
+                                found.Add((group.Key, o, group.First(n => n.Based[1] == o.Name).By));
+                        }
+                    }
+                });
+                log($"web: {user} looked for {wanted.Count} files on {login.Host}: {found.Count} found");
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    host = login.Host, storage = Json(machine.Store.Storage()),
+                    files = found.Select(f => new
+                    {
+                        name = f.File.Name, library = f.Library, kind = f.File.Kind, text = f.File.Text, receivable = f.File.Receivable, size = f.File.Size, records = f.File.Records,
+                        deleted = f.File.Deleted, members = f.File.Members, estimate = f.File.Estimate, bare = f.File.EstimateWithoutData, basedOn = f.File.BasedOn, neededBy = f.NeededBy,
+                        here = machine.Here(f.File.Name, machine.Store.HasLibrary(f.Library) ? f.Library : null, null) is var (kind, hereLibrary, records, _)
+                            ? new { kind, library = hereLibrary, records } : null,
+                    }),
+                });
+            }
+            catch (Exception e) when (e is Remote.RemoteException or IOException or System.Net.Sockets.SocketException)
+            {
+                context.Response.StatusCode = 502;
+                await context.Response.WriteAsJsonAsync(new { message = e.Message });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }, changes: true));
+
+        // Receives the objects chosen (or all of them but those omitted), in the background.
+        _app.MapPost("/api/remote/pull", Authorized(async (context, user) =>
+        {
+            var (request, login) = await Read(context);
+            if (request is null || login is null) return;
+            var library = request.Library!.Trim().ToUpperInvariant();
+            var restoreTo = request.RestoreTo?.Trim().ToUpperInvariant() is { Length: > 0 } to && to != library ? to : null;
+            List<string> Names(List<string>? names) => [.. (names ?? []).Select(n => n.Trim().ToUpperInvariant()).Where(n => n.Length > 0).Distinct()];
+            var (objects, omit) = (request.All == true ? ["*ALL"] : Names(request.Objects), Names(request.Omit));
+            var problem = !Store.IsLibraryName(restoreTo ?? library) ? $"{restoreTo ?? library} isn't a name a library can have here."
+                : objects.Count == 0 ? "Choose what to receive."
+                : objects.Concat(omit).FirstOrDefault(n => n != "*ALL" && !Machine.IsName(n)) is { } wrong ? $"{wrong} isn't an object name."
+                : null;
+            Transfer? transfer = null;
+            if (problem is null)
+            {
+                lock (_transferGate)
+                {
+                    if (_transfer is { Result: null }) problem = $"{_transfer.User} is receiving {_transfer.What}: one at a time.";
+                    else
+                    {
+                        _transfer = transfer = new Transfer(Convert.ToHexString(RandomNumberGenerator.GetBytes(8)), user,
+                            $"{library} from {login.Host}{(restoreTo is null ? "" : $" to {restoreTo}")}")
+                        {
+                            DatabaseAtStart = machine.Store.Storage().Database,
+                            Chosen = request.All == true ? 0 : objects.Count,
+                        };
+                    }
+                }
+            }
+            if (transfer is null)
+            {
+                context.Response.StatusCode = problem!.Contains("one at a time") ? 409 : 400;
+                await context.Response.WriteAsJsonAsync(new { message = problem });
+                return;
+            }
+            log($"web: {user} receives {transfer.What} ({(request.All == true ? "all" : objects.Count)} objects{(request.Data == false ? ", without records" : "")})");
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var filters = request.Filters?.Where(f => !string.IsNullOrWhiteSpace(f.Value)).ToDictionary(f => f.Key.Trim().ToUpperInvariant(), f => f.Value.Trim());
+                    transfer.Result = machine.Receive(login, [library], objects, ["*ALL"], omit, restoreTo, request.Data != false, new BatchJob(user, transfer.Cancel.Token), transfer.Status,
+                        filters is { Count: > 0 } ? filters : null);
+                }
+                catch (Exception e)
+                {
+                    transfer.Result = new CommandResult(false, $"The receive ended: {e.Message}");
+                }
+                log($"web: {user}'s receive of {transfer.What} ended: {transfer.Result.Message}");
+            });
+            await context.Response.WriteAsJsonAsync(State(transfer, 0));
+        }, changes: true));
+
+        _app.MapGet("/api/remote/pull", Authorized(async (context, _) =>
+        {
+            Transfer? transfer;
+            lock (_transferGate) transfer = _transfer;
+            if (transfer is null)
+            {
+                context.Response.StatusCode = 404;
+                await context.Response.WriteAsJsonAsync(new { message = "Nothing has been received." });
+                return;
+            }
+            await context.Response.WriteAsJsonAsync(State(transfer, int.TryParse(context.Request.Query["after"], out var after) ? after : 0));
+        }));
+
+        _app.MapPost("/api/remote/cancel", Authorized((context, user) =>
+        {
+            Transfer? transfer;
+            lock (_transferGate) transfer = _transfer;
+            if (transfer is { Result: null })
+            {
+                transfer.Cancel.Cancel();
+                log($"web: {user} ended the receive of {transfer.What}");
+            }
+            return Task.CompletedTask;
         }, changes: true));
     }
 

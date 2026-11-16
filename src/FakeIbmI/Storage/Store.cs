@@ -472,6 +472,37 @@ public sealed partial class Store : IDisposable
         }
     }
 
+    /// <summary>
+    /// How big the database is, and how much room is left where the server keeps it, of how much (null when the
+    /// server won't say: asking takes a superuser, as it runs df on the server).
+    /// </summary>
+    public (long Database, long? Free, long? Total) Storage()
+    {
+        var size = (long)Select("SELECT pg_database_size(current_database())")[0][0]!;
+        try
+        {
+            // On a connection of its own: the table df's answer goes in mustn't show up in QTEMP.
+            using var other = (NpgsqlConnection)((ICloneable)_connection).Clone();
+            other.Open();
+            string? Scalar(string sql)
+            {
+                using var command = new NpgsqlCommand(sql, other);
+                return command.ExecuteScalar()?.ToString();
+            }
+            var directory = Scalar("SHOW data_directory");
+            if (directory is null || directory.Contains('\'')) return (size, null, null);
+            Scalar("CREATE TEMP TABLE qfake_df (line text)");
+            Scalar($"COPY qfake_df FROM PROGRAM 'df -Pk ''{directory}'' | tail -1'");
+            var parts = (Scalar("SELECT line FROM qfake_df LIMIT 1") ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            // df -P: the file system, its size, what's used and what's available, in kilobytes.
+            return parts.Length >= 4 && long.TryParse(parts[3], out var free) && long.TryParse(parts[1], out var total) ? (size, free * 1024, total * 1024) : (size, null, null);
+        }
+        catch (Exception e) when (e is NpgsqlException or InvalidOperationException)
+        {
+            return (size, null, null);
+        }
+    }
+
     /// <summary>A parameter of no type: PostgreSQL works out its type from where it's used, as Db2 does for a host variable.</summary>
     internal static NpgsqlParameter Untyped(string name, object? value) =>
         value is string s ? new NpgsqlParameter(name, NpgsqlDbType.Unknown) { Value = s } : new NpgsqlParameter(name, value ?? DBNull.Value);

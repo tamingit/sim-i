@@ -22,6 +22,7 @@
 //     (.rpgle, .sqlrpgle, .dspf, .sql), and what the fake can't run is logged by line.
 // --check does that without creating anything or starting a server; exit code 3 when something isn't supported.
 // --web-port also runs the web source editor: sign on with a user profile to edit, upload and compile source.
+// --debug-port also runs the debug server: VS Code (with the extension in vscode/) sets breakpoints in RPG and steps through it.
 // --ifs-dir names the folder that is the integrated file system's root (default: a temporary one).
 // --bind listens on another address than loopback (0.0.0.0: every interface).
 // --trace logs each Telnet negotiation step, and each record's length (never its contents).
@@ -92,6 +93,11 @@ try
         ? await WebServer.StartAsync(webPort, Log, options.Bind, users, machine)
         : null;
     if (web is not null) Console.WriteLine($"fake web source editor listening on port {web.Port}: http://{(options.Bind.Equals(System.Net.IPAddress.Any) ? "localhost" : options.Bind.ToString())}:{web.Port}/");
+
+    await using var debug = options.DebugPort is { } debugPort
+        ? await FakeIbmI.Debugging.DapServer.StartAsync(debugPort, Log, options.Bind, users, machine)
+        : null;
+    if (debug is not null) Console.WriteLine($"fake debug server (Debug Adapter Protocol, for VS Code) listening on port {debug.Port}");
 
     var services = new Dictionary<string, int>();
     if (command is not null) services["as-rmtcmd"] = command.Port;

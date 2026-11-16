@@ -36,6 +36,57 @@ public sealed partial class Machine
     /// <summary>Where long work says how far it is: the server's log.</summary>
     public Action<string> Progress { get; set; } = _ => { };
 
+    /// <summary>The remote system to receive from, and who signs on to it.</summary>
+    internal sealed record RemoteLogin(string Host, int Port, string User, string Password, RemoteSecurity Security);
+
+    /// <summary>How far a receive is: what it says as it goes, and what it has done so far. Read from another thread while it runs.</summary>
+    internal sealed class ReceiveStatus
+    {
+        private readonly List<string> _lines = [];
+        private int _restored, _failed;
+        private long _records;
+
+        public int Restored => _restored;
+        public int Failed => _failed;
+        public long Records => Interlocked.Read(ref _records);
+
+        public void Say(string line)
+        {
+            lock (_lines) _lines.Add(line);
+        }
+
+        public void Done(bool ok)
+        {
+            if (ok) Interlocked.Increment(ref _restored);
+            else Interlocked.Increment(ref _failed);
+        }
+
+        public void Loaded(long records) => Interlocked.Add(ref _records, records);
+
+        /// <summary>The lines said from line <paramref name="after"/> on, and how many there are in all.</summary>
+        public (List<string> Lines, int Count) Lines(int after)
+        {
+            lock (_lines) return (_lines.Skip(Math.Max(0, after)).ToList(), _lines.Count);
+        }
+    }
+
+    /// <summary>An object of a remote library, as a survey of it finds it: what it is, how big it is there, and about how big it would be here.</summary>
+    internal sealed record SurveyedObject(string Name, string Type, string Attribute, string Kind, string Text, bool Receivable, long Size, long Records, long Deleted, int Members, long Estimate, long EstimateWithoutData)
+    {
+        /// <summary>A logical file's, index's or view's physical files, each as LIBRARY/FILE: what has to be here for it to be made.</summary>
+        public IReadOnlyList<string> BasedOn { get; init; } = [];
+    }
+
+    /// <summary>
+    /// What a library on a remote system holds, without receiving any of it: each object with its size there
+    /// and an estimate of the room it takes here (see <see cref="Receiver.Survey"/>).
+    /// </summary>
+    internal (List<SurveyedObject> Objects, bool Encrypted) Survey(RemoteLogin login, string library, IJobHost host, ReceiveStatus? status = null, IReadOnlyList<string>? names = null)
+    {
+        using var remote = RemoteSystem.Connect(login.Host, login.Port, login.User, login.Password, login.Security);
+        return (new Receiver(this, remote, host, library.ToUpperInvariant(), library.ToUpperInvariant(), false, status ?? new ReceiveStatus(), null).Survey(names ?? ["*ALL"]), remote.Encrypted);
+    }
+
     private CommandResult RunSaveRestore(ClCommand command, IJobHost host)
     {
         CommandResult Fail(string message, string id) => new(false, message, MessageId: id);
@@ -57,6 +108,8 @@ public sealed partial class Machine
         var types = Words(command.Value("OBJTYPE", -1));
         if (types.Count == 0) types.Add("*ALL");
         var omit = Words(command.Value("OMITOBJ", -1));
+        // WHERE('CUSTNO > 1000'): only the records of the files received that meet an SQL condition, as it's written on the remote system.
+        var where = command.Value("WHERE", -1) is { } condition ? Unquoted(condition) : null;
         // DATA(*NO), as CRTDUPOBJ has it: the files come without their records (source members come all the same).
         var data = Words(command.Value("DATA", -1)).FirstOrDefault() != "*NO";
         var user = command.Value("RMTUSER", -1)?.Trim().ToUpperInvariant() ?? RemoteUser;
@@ -74,17 +127,31 @@ public sealed partial class Machine
             default: return Fail($"SECCNN({command.Value("SECCNN", -1)}) isn't *DFT, *SSL or *NONE.", "CPD0084");
         }
 
+        return Receive(new RemoteLogin(location, port, user, password, security), libraries, names, types, omit, restoreTo, data, host,
+            filters: where is { Length: > 0 } ? new Dictionary<string, string> { ["*ALL"] = where } : null);
+    }
+
+    /// <summary>
+    /// Receives objects of libraries on a remote system: those of <paramref name="names"/> (names, generic names or
+    /// *ALL) and <paramref name="types"/>, but for <paramref name="omit"/>. <paramref name="status"/> is told how far it is.
+    /// </summary>
+    internal CommandResult Receive(RemoteLogin login, IReadOnlyList<string> libraries, IReadOnlyList<string> names, IReadOnlyList<string> types,
+        IReadOnlyList<string> omit, string? restoreTo, bool data, IJobHost host, ReceiveStatus? status = null, IReadOnlyDictionary<string, string>? filters = null)
+    {
+        CommandResult Fail(string message, string id) => new(false, message, MessageId: id);
+        var (location, user) = (login.Host, login.User);
+        status ??= new ReceiveStatus();
         var listing = new List<string>();
         int restored = 0, failed = 0, left = 0;
         long records = 0;
         try
         {
-            using var remote = RemoteSystem.Connect(location, port, user, password, security);
+            using var remote = RemoteSystem.Connect(login.Host, login.Port, login.User, login.Password, login.Security);
             listing.Add($"Objects received from {location.ToUpperInvariant()} as {user}, {DateTime.Now:yyyy-MM-dd HH:mm:ss}"
                 + (remote.Encrypted ? "" : " (the connection isn't encrypted: its FTP server offers no TLS)"));
             foreach (var library in libraries)
             {
-                var receiver = new Receiver(this, remote, host, library, restoreTo ?? library, data);
+                var receiver = new Receiver(this, remote, host, library, restoreTo ?? library, data, status, filters);
                 try
                 {
                     receiver.Receive(names, types, omit);
@@ -105,11 +172,13 @@ public sealed partial class Machine
             var why = e is RemoteException ? e.Message : $"The connection to {location} was lost: {e.Message}";
             if (restored == 0 && failed == 0) return Fail(why, why.Contains("not found", StringComparison.OrdinalIgnoreCase) ? "CPF3781" : "CPF3770");
             listing.Add($"Ended early: {why}");
+            status.Say($"Ended early: {why}");
             failed++;
         }
         catch (OperationCanceledException)
         {
             listing.Add("Ended early: the job was ended.");
+            status.Say("Ended early: the job was ended.");
             failed++;
         }
         var spool = Store.AddSpool("QPSRODSP", host.User, 132, listing);
@@ -228,11 +297,19 @@ public sealed partial class Machine
         pattern == "*ALL" || (pattern.EndsWith('*') ? name.StartsWith(pattern[..^1], StringComparison.Ordinal) : name == pattern);
 
     /// <summary>Receives one library's objects.</summary>
-    private sealed class Receiver(Machine machine, RemoteSystem remote, IJobHost host, string library, string target, bool data)
+    private sealed class Receiver(Machine machine, RemoteSystem remote, IJobHost host, string library, string target, bool data, ReceiveStatus status,
+        IReadOnlyDictionary<string, string>? filters)
     {
-        private sealed record RemoteObject(string Name, string Type, string Attribute, string Text, string SourceFile, string SourceLibrary, string SourceMember);
+        private sealed record RemoteObject(string Name, string Type, string Attribute, string Text, string SourceFile, string SourceLibrary, string SourceMember, long Size = 0);
 
-        private sealed record RemoteMember(string Name, long Records, long Deleted, string SourceType, string Text);
+        private sealed record RemoteMember(string Name, long Records, long Deleted, string SourceType, string Text, long Size = 0);
+
+        /// <summary>Says how far it is: to whoever follows this receive, and to the server's log.</summary>
+        private void Progress(string line)
+        {
+            status.Say(line);
+            machine.Progress(line);
+        }
 
         public List<string> Listing { get; } = [];
         public int Restored { get; private set; }
@@ -254,15 +331,17 @@ public sealed partial class Machine
         private void Done(RemoteObject o, string what)
         {
             Restored++;
+            status.Done(true);
             Listing.Add($"  {o.Name,-10} {o.Type,-8} {o.Attribute,-10} {what}");
-            machine.Progress($"{library}/{o.Name} {o.Type}: {what}");
+            Progress($"{library}/{o.Name} {o.Type}: {what}");
         }
 
         private void NotDone(RemoteObject o, string why)
         {
             Failed++;
+            status.Done(false);
             Listing.Add($"  {o.Name,-10} {o.Type,-8} {o.Attribute,-10} NOT RESTORED: {why}");
-            machine.Progress($"{library}/{o.Name} {o.Type} not restored: {why}");
+            Progress($"{library}/{o.Name} {o.Type} not restored: {why}");
         }
 
         public void Receive(IReadOnlyList<string> names, IReadOnlyList<string> types, IReadOnlyList<string> omit)
@@ -340,9 +419,84 @@ public sealed partial class Machine
                     continue;
                 }
                 found.AddRange(remote.Rows("QTEMP", "QFKOBJ", "QFKOBJ", "DSPOBJD").Select(r =>
-                    new RemoteObject(r["ODOBNM"], r["ODOBTP"], r["ODOBAT"], r["ODOBTX"], r["ODSRCF"], r["ODSRCL"], r["ODSRCM"])));
+                    new RemoteObject(r["ODOBNM"], r["ODOBTP"], r["ODOBAT"], r["ODOBTX"], r["ODSRCF"], r["ODSRCL"], r["ODSRCM"], ObjectSize(r))));
             }
             return found;
+        }
+
+        /// <summary>An object's size in bytes: DSPOBJD gives a big one in units.</summary>
+        private static long ObjectSize(Dictionary<string, string> row)
+        {
+            long Number(string field) => long.TryParse(row.GetValueOrDefault(field), NumberStyles.Number, CultureInfo.InvariantCulture, out var n) ? n : 0;
+            return Number("ODOBSZ") is var size && size < 9_999_999_999 ? size : Number("ODSIZU") * Math.Max(1, Number("ODBPUN"));
+        }
+
+        /// <summary>A file's member that's received: the one named as the file, else its first.</summary>
+        private static RemoteMember? Chosen(string file, List<RemoteMember> members) => members.FirstOrDefault(m => m.Name == file) ?? members.FirstOrDefault();
+
+        /// <summary>
+        /// What the library holds, without receiving it: its objects (DSPOBJD), and of its files what kind
+        /// each is and its members' records and sizes (DSPFD). The room a file takes here is estimated from
+        /// its member's size there, less its deleted records, and a fifth more: what PostgreSQL's rows, the
+        /// relative record number and the key's index were found to add. A file without records takes a few pages.
+        /// </summary>
+        public List<SurveyedObject> Survey(IReadOnlyList<string> names)
+        {
+            const long Empty = 16 * 1024;
+            var objects = Inventory(names).DistinctBy(o => (o.Name, o.Type)).OrderBy(o => o.Name, StringComparer.Ordinal).ToList();
+            var files = objects.Where(o => o.Type == "*FILE" && o.Attribute is "PF" or "LF" or "PF38" or "LF38").ToList();
+            // Asked for by name, what each logical file is over is worth its listing; of a whole library it isn't.
+            var byName = !names.Contains("*ALL");
+            if (files.Count > 0) Describe(names, [.. files.Select(f => f.Name)], survey: true, paths: byName);
+            var surveyed = new List<SurveyedObject>();
+            foreach (var o in objects)
+            {
+                var (kind, receivable) = (o.Type == "*FILE" ? $"*FILE {o.Attribute}" : o.Type, o.Type is "*DTAARA" or "*MSGF");
+                long records = 0, deleted = 0, estimate = receivable ? 8 * 1024 : 0, bare = estimate;
+                var members = 0;
+                if (files.Contains(o))
+                {
+                    if (!_attributes.TryGetValue(o.Name, out var attributes))
+                    {
+                        surveyed.Add(new SurveyedObject(o.Name, o.Type, o.Attribute, "File (not described: " + (_unreadable.GetValueOrDefault(o.Name) ?? "damaged?") + ")", o.Text, false, o.Size, 0, 0, 0, 0, 0));
+                        continue;
+                    }
+                    receivable = true;
+                    var all = _members.GetValueOrDefault(o.Name) ?? [];
+                    members = all.Count;
+                    var physical = attributes["ATFTYP"] == "P";
+                    var sql = attributes["ATSQLT"];
+                    if (physical && attributes["ATDTAT"] == "S")
+                    {
+                        kind = "Source file";
+                        records = all.Sum(m => m.Records);
+                        // Source is kept as text, without each record's trailing blanks.
+                        estimate = bare = Empty + all.Sum(m => m.Size) / 2;
+                    }
+                    else if (physical)
+                    {
+                        kind = sql == "T" ? "SQL table" : "Physical file";
+                        bare = Empty;
+                        if (Chosen(o.Name, all) is { } member)
+                        {
+                            (records, deleted) = (member.Records, member.Deleted);
+                            estimate = Empty + (records == 0 ? 0 : (long)(member.Size * (double)records / (records + deleted) * 1.2));
+                        }
+                        else estimate = Empty;
+                    }
+                    else
+                    {
+                        kind = sql == "V" ? "SQL view" : sql == "I" ? "SQL index" : attributes["ATJOIN"] == "Y" ? "Join logical file" : "Logical file";
+                        // A logical file and a view are views here, which take no room; an index is an index, taken to be as big as it is there.
+                        (estimate, bare) = sql == "I" ? (o.Size, 8 * 1024) : (0, 0);
+                    }
+                }
+                surveyed.Add(new SurveyedObject(o.Name, o.Type, o.Attribute, kind, o.Text, receivable, o.Size, records, deleted, members, estimate, bare)
+                {
+                    BasedOn = [.. (_paths.GetValueOrDefault(o.Name) ?? []).Where(r => r["APBOF"].Length > 0).Select(r => $"{r["APBOL"]}/{r["APBOF"]}").Distinct()],
+                });
+            }
+            return surveyed;
         }
 
         /// <summary>
@@ -350,7 +504,7 @@ public sealed partial class Machine
         /// select/omit rules and members (DSPFD). A listing of many files that fails (one damaged
         /// file stops it) is asked again by first letter, and then file by file.
         /// </summary>
-        private void Describe(IReadOnlyList<string> patterns, IReadOnlyList<string> files)
+        private void Describe(IReadOnlyList<string> patterns, IReadOnlyList<string> files, bool survey = false, bool paths = false)
         {
             void Listed(string pattern, Func<string, string?> ask)
             {
@@ -378,8 +532,8 @@ public sealed partial class Machine
             }
             foreach (var pattern in patterns)
             {
-                machine.Progress($"{library}: reading the descriptions of {pattern}");
-                Listed(pattern, p =>
+                Progress($"{library}: reading the descriptions of {pattern}");
+                if (!survey) Listed(pattern, p =>
                 {
                     try
                     {
@@ -392,13 +546,14 @@ public sealed partial class Machine
                     }
                 });
                 Listed(pattern, p => Outfile(p, "*BASATR", "*PF *LF", r => _attributes[r["ATFILE"]] = r));
-                Listed(pattern, p => Outfile(p, "*ACCPTH", "*PF *LF", r => Add(_paths, r["APFILE"], r)));
-                Listed(pattern, p => Outfile(p, "*SELECT", "*LF", r => Add(_rules, r["SOFILE"], r)));
+                if (!survey || paths) Listed(pattern, p => Outfile(p, "*ACCPTH", "*PF *LF", r => Add(_paths, r["APFILE"], r)));
+                if (!survey) Listed(pattern, p => Outfile(p, "*SELECT", "*LF", r => Add(_rules, r["SOFILE"], r)));
                 Listed(pattern, p => Outfile(p, "*MBRLIST", "*PF", r =>
                 {
                     if (!_members.TryGetValue(r["MLFILE"], out var members)) _members[r["MLFILE"]] = members = [];
                     if (r["MLNAME"].Length > 0)
-                        members.Add(new RemoteMember(r["MLNAME"], long.Parse(r["MLNRCD"], CultureInfo.InvariantCulture), long.Parse(r["MLNDTR"], CultureInfo.InvariantCulture), r["MLSEU2"], r["MLMTXT"]));
+                        members.Add(new RemoteMember(r["MLNAME"], long.Parse(r["MLNRCD"], CultureInfo.InvariantCulture), long.Parse(r["MLNDTR"], CultureInfo.InvariantCulture), r["MLSEU2"], r["MLMTXT"],
+                            long.TryParse(r.GetValueOrDefault("MLSIZ2"), NumberStyles.Number, CultureInfo.InvariantCulture, out var size) ? size : 0));
                 }));
             }
             _layouts = _layouts.Where(l => files.Contains(l.Key)).ToDictionary(StringComparer.Ordinal);
@@ -479,19 +634,20 @@ public sealed partial class Machine
             if (!data) notes.Add("DATA(*NO)");
             else if (members.Count > 0)
             {
-                var member = members.FirstOrDefault(m => m.Name == o.Name) ?? members[0];
+                var member = Chosen(o.Name, members)!;
                 if (members.Count > 1) notes.Add($"member {member.Name} only, of {members.Count}");
                 try
                 {
                     if (member.Records > 0) (count, bad) = Load(o.Name, name, layout, fields, member, members.Count > 1);
                 }
-                catch (Exception e) when (e is not OperationCanceledException)
+                catch
                 {
                     // Some of its records are worse than none: the file is left empty, and said not to be restored.
                     _store.Run($"TRUNCATE TABLE {_store.SqlName(target, name)}");
                     throw;
                 }
             }
+            if (data && filters is not null && (filters.GetValueOrDefault(o.Name) ?? filters.GetValueOrDefault("*ALL")) is { Length: > 0 } only) notes.Add($"only where {only}");
             if (bad > 0) notes.Add($"{bad:N0} values weren't valid and are zero");
             Records += count;
             Done(o, $"restored, {(data ? $"{count:N0} records" : "without its records")}{(notes.Count > 0 ? "; " + string.Join("; ", notes) : "")}");
@@ -505,7 +661,10 @@ public sealed partial class Machine
         private (long Count, long Bad) Load(string file, string table, RemoteLayout layout, List<RemoteField> fields, RemoteMember member, bool namedMember)
         {
             var nullable = fields.Where(f => f.Nullable).ToList();
-            var direct = member.Deleted == 0 && nullable.Count == 0 && fields.Count == layout.Fields.Count;
+            // Only the records that meet the file's filter, when it has one: an SQL condition on its fields (A is the file, so RRN(A) <= 1000 is its first thousand).
+            var filter = filters is null ? null : filters.GetValueOrDefault(file) ?? filters.GetValueOrDefault("*ALL");
+            if (string.IsNullOrWhiteSpace(filter)) filter = null;
+            var direct = member.Deleted == 0 && nullable.Count == 0 && fields.Count == layout.Fields.Count && filter is null;
             var (fromLibrary, fromFile, fromMember, recordLength) = (library, file, member.Name, layout.RecordLength);
             RemoteField? rrn = null;
             var flags = new List<RemoteField>();
@@ -523,7 +682,14 @@ public sealed partial class Machine
                 // A null can't be read through FTP, so a null-capable field comes as its value or a default, with its flag after.
                 select.AddRange(fields.Select(f => f.Nullable ? $"COALESCE(A.{RemoteSystem.Quoted(f.Name)}, {NullDefault(f)}) AS {RemoteSystem.Quoted(f.Name)}" : $"A.{RemoteSystem.Quoted(f.Name)}"));
                 select.AddRange(nullable.Select((f, i) => $"CAST(CASE WHEN A.{RemoteSystem.Quoted(f.Name)} IS NULL THEN '1' ELSE '0' END AS CHAR(1)) AS QFN{i + 1:00000}"));
-                remote.Sql($"CREATE VIEW QTEMP.QFKV AS SELECT {string.Join(", ", select)} FROM {source} A");
+                try
+                {
+                    remote.Sql($"CREATE VIEW QTEMP.QFKV AS SELECT {string.Join(", ", select)} FROM {source} A{(filter is null ? "" : $" WHERE {filter}")}");
+                }
+                catch (RemoteException e) when (filter is not null)
+                {
+                    throw new RemoteException($"its filter ({filter}) isn't a condition the remote system takes: {e.Message}");
+                }
                 var view = remote.Describe("QTEMP", "QFKV")["QFKV"];
                 if (view.Fields.Count != 1 + fields.Count + nullable.Count)
                     throw new RemoteException($"the view to receive it through has {view.Fields.Count} fields, not {1 + fields.Count + nullable.Count}");
@@ -546,11 +712,14 @@ public sealed partial class Machine
             var copy = $"COPY {sqlName} ({string.Join(", ", loaded.Select(f => $"\"{columns[f.Name].Replace("\"", "\"\"")}\""))}, {Store.RowNumber}) FROM STDIN";
             var rows = new StringBuilder();
             long bad = 0, number = 0, highest = 0;
+            long unsaid = 0;
             void Flush()
             {
                 if (rows.Length == 0) return;
                 _store.Copy(copy, rows.ToString());
                 rows.Clear();
+                status.Loaded(unsaid);
+                unsaid = 0;
             }
             var count = remote.Download(fromLibrary, fromFile, fromMember, recordLength, record =>
             {
@@ -563,10 +732,11 @@ public sealed partial class Machine
                 number = rrn is null ? number + 1 : long.Parse(RemoteRecords.Value(record, rrn, ref bad), CultureInfo.InvariantCulture);
                 highest = Math.Max(highest, number);
                 rows.Append(number).Append('\n');
+                unsaid++;
                 if (rows.Length >= 4_000_000)
                 {
                     Flush();
-                    machine.Progress($"{library}/{file}: {highest:N0} of {member.Records + member.Deleted:N0}");
+                    Progress($"{library}/{file}: {highest:N0} of {member.Records + member.Deleted:N0}");
                 }
             }, host.Cancelled);
             Flush();
@@ -620,7 +790,7 @@ public sealed partial class Machine
                 }
                 if (found.Any(d => d.Severity is Severity.Unsupported or Severity.Error)) unsupported++;
                 saved++;
-                if (saved % 100 == 0) machine.Progress($"{library}/{o.Name}: {saved} of {members.Count} members");
+                if (saved % 100 == 0) Progress($"{library}/{o.Name}: {saved} of {members.Count} members");
             }
             Done(o, $"restored, {saved} member{(saved == 1 ? "" : "s")}{(unsupported > 0 ? $"; {unsupported} with lines the fake doesn't support or that are in error" : "")}");
         }

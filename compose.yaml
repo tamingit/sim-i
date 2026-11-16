@@ -40,6 +40,8 @@ services:
       - "127.0.0.1:9476:9476"
       - "127.0.0.1:449:449"
       - "127.0.0.1:8080:8080"
+      # The debug server, for VS Code (the extension in vscode/fake-ibmi).
+      - "127.0.0.1:4711:4711"
     volumes:
       - fake-ibmi-ifs:/ifs
       - fake-ibmi-certs:/certs
