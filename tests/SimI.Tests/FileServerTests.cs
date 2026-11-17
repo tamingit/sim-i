@@ -147,7 +147,9 @@ public sealed class FileServerTests : IDisposable
         // A pattern, whatever its case; the most entries; an empty folder; none there.
         Assert.Equal(["Note.TXT"], (await client.ListAsync("/HOME/prtuser/*.txt"))[..^1].Select(Name));
         Assert.Equal(2, (await client.ListAsync("/home/prtuser/*", most: 2)).Count - 1);
-        Assert.Equal(18, ReturnCode(Assert.Single(await client.ListAsync("/home/prtuser/empty/*"))));
+        // An empty folder is return code 2 alone, as the IBM i answers.
+        Assert.Equal(2, ReturnCode(Assert.Single(await client.ListAsync("/home/prtuser/empty/*"))));
+        Assert.Equal(2, ReturnCode(Assert.Single(await client.ListAsync("/home/prtuser/*.none"))));
         Assert.Equal(3, ReturnCode(Assert.Single(await client.ListAsync("/no-such-folder/*"))));
         Assert.Equal(0x8002, Short(await client.SendAsync(Open("/home/prtuser/data.bin")), 18));
     }
