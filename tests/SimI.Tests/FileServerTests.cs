@@ -100,6 +100,7 @@ public sealed class FileServerTests : IDisposable
             Assert.Equal(13, ReturnCode(await client.SendAsync(Open("/escape/secret.txt"))));
             Assert.Equal(23, ReturnCode(await client.SendAsync(Open("/tmp/note.txt", access: 2))));
             Assert.Equal(23, ReturnCode(await client.SendAsync(Frame(18, new byte[14]))));
+            Assert.Equal(13, ReturnCode(Assert.Single(await client.ListAsync("/escape/*"))));
             Assert.Equal(6, ReturnCode(await client.SendAsync(Read(99, 0, 16))));
 
             // The connection still works after refusals.
@@ -110,6 +111,48 @@ public sealed class FileServerTests : IDisposable
             Directory.Delete(outside, true);
         }
     }
+
+    [Fact]
+    public async Task AFolderListsAsAChainOfEntriesThenNoMoreFiles()
+    {
+        var ifs = NewIfs();
+        Directory.CreateDirectory(ifs.HostPath("/home/prtuser/Reports"));
+        Directory.CreateDirectory(ifs.HostPath("/home/prtuser/empty"));
+        await File.WriteAllBytesAsync(ifs.HostPath("/home/prtuser/data.bin"), new byte[1234]);
+        await File.WriteAllTextAsync(ifs.HostPath("/home/prtuser/Note.TXT"), "placeholder");
+        await using var server = await FileServer.StartAsync(ifs);
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+
+        var replies = await client.ListAsync("/home/prtuser/*");
+        var entries = replies[..^1];
+        Assert.Equal(4, entries.Count);
+        Assert.All(entries, e =>
+        {
+            Assert.Equal(0x8005, Short(e, 18));
+            Assert.Equal(93, Short(e, 16));
+            Assert.Equal(1, Short(e, 20));
+            Assert.Equal(2, Short(e, 117));
+        });
+        Assert.Equal(18, ReturnCode(replies[^1]));
+        Assert.Equal(0, Short(replies[^1], 20));
+        var byName = entries.ToDictionary(Name);
+        Assert.Equal(["Note.TXT", "Reports", "data.bin", "empty"], byName.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal((2, 0x10), (Short(byName["Reports"], 54), Int(byName["Reports"], 50)));
+        Assert.Equal((1, 0x20), (Short(byName["data.bin"], 54), Int(byName["data.bin"], 50)));
+        Assert.Equal(1234, BinaryPrimitives.ReadInt64BigEndian(byName["data.bin"].AsSpan(81)));
+        Assert.Equal(1234, Int(byName["data.bin"], 46));
+        Assert.True(BinaryPrimitives.ReadUInt32BigEndian(byName["data.bin"].AsSpan(30)) > 1_600_000_000);
+
+        // A pattern, whatever its case; the most entries; an empty folder; none there.
+        Assert.Equal(["Note.TXT"], (await client.ListAsync("/HOME/prtuser/*.txt"))[..^1].Select(Name));
+        Assert.Equal(2, (await client.ListAsync("/home/prtuser/*", most: 2)).Count - 1);
+        Assert.Equal(18, ReturnCode(Assert.Single(await client.ListAsync("/home/prtuser/empty/*"))));
+        Assert.Equal(3, ReturnCode(Assert.Single(await client.ListAsync("/no-such-folder/*"))));
+        Assert.Equal(0x8002, Short(await client.SendAsync(Open("/home/prtuser/data.bin")), 18));
+    }
+
+    private static string Name(byte[] entry) => Encoding.BigEndianUnicode.GetString(entry, 119, Int(entry, 113) - 6);
 
     [Fact]
     public async Task AWrongPasswordIsRefusedAtStartServer()
@@ -196,6 +239,22 @@ public sealed class FileServerTests : IDisposable
         return frame;
     }
 
+    /// <summary>List attributes by name: the pattern, the most entries (FFFF: no limit), as JTOpen sends it.</summary>
+    private static byte[] List(string pattern, int most)
+    {
+        var name = Encoding.BigEndianUnicode.GetBytes(pattern);
+        var template = new byte[20];
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(6), 1200);
+        BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(8), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(14), (ushort)most);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(16), 1);
+        var tail = new byte[6 + name.Length];
+        BinaryPrimitives.WriteInt32BigEndian(tail, tail.Length);
+        BinaryPrimitives.WriteUInt16BigEndian(tail.AsSpan(4), 2);
+        name.CopyTo(tail, 6);
+        return Frame(10, template, tail);
+    }
+
     private sealed class Client : IAsyncDisposable
     {
         private readonly TcpClient _tcp;
@@ -236,16 +295,29 @@ public sealed class FileServerTests : IDisposable
             return point;
         }
 
-        public async Task<byte[]> SendAsync(byte[] frame)
+        /// <summary>Sends a list and reads every reply, to the one that ends the chain.</summary>
+        public async Task<List<byte[]>> ListAsync(string pattern, int most = 0xFFFF)
         {
-            if (Int(frame, 12) == 0) BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(12), Interlocked.Increment(ref _correlation) + 100);
-            await _stream.WriteAsync(frame);
+            var replies = new List<byte[]> { await SendAsync(List(pattern, most)) };
+            while (Short(replies[^1], 18) != 0x8001 && Short(replies[^1], 20) != 0) replies.Add(await ReadAsync());
+            return replies;
+        }
+
+        private async Task<byte[]> ReadAsync()
+        {
             var header = new byte[20];
             await _stream.ReadExactlyAsync(header);
             var reply = new byte[Int(header, 0)];
             header.CopyTo(reply, 0);
             await _stream.ReadExactlyAsync(reply.AsMemory(20));
             return reply;
+        }
+
+        public async Task<byte[]> SendAsync(byte[] frame)
+        {
+            if (Int(frame, 12) == 0) BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(12), Interlocked.Increment(ref _correlation) + 100);
+            await _stream.WriteAsync(frame);
+            return await ReadAsync();
         }
 
         public async ValueTask DisposeAsync()
