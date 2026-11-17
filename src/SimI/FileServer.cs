@@ -7,7 +7,8 @@
 //    3 read                -> 8003: the data as code point 0005; none at the end of the file
 //    9 close               -> 8004
 //   10 list attributes     -> a chain of 8005, one per entry of a folder that matches the
-//                             pattern (folder/*), then return code 18 (no more files)
+//                             pattern (folder/*), then return code 18 (no more files); return
+//                             code 2 alone when nothing matches (an empty folder)
 //
 // Anything it refuses is reply 8001 with a return code at byte 22: 2 no such file, 3 no such
 // folder, 4 a folder opened as a file, 6 no such handle, 13 not authorised (a path out of the IFS),
@@ -252,8 +253,10 @@ public sealed class FileServer : HostServer
             if (!match.IsMatch(entry.Name)) continue;
             replies.Add(Entry(entry, correlation));
         }
+        // After entries the chain ends with 18; with none (an empty folder, or nothing matched) the
+        // IBM i answers 2 alone.
         var count = replies.Count;
-        replies.Add(ReturnCode(correlation, NoMoreFiles));
+        replies.Add(ReturnCode(correlation, count == 0 ? FileNotFound : NoMoreFiles));
         return (replies, $"{what}: {count} entries");
     }
 
