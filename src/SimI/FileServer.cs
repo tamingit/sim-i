@@ -6,12 +6,14 @@
 //    2 open                -> 8002: a handle, the file's dates and its size (64-bit at byte 89)
 //    3 read                -> 8003: the data as code point 0005; none at the end of the file
 //    9 close               -> 8004
+//   10 list attributes     -> a chain of 8005, one per entry of a folder that matches the
+//                             pattern (folder/*), then return code 18 (no more files)
 //
 // Anything it refuses is reply 8001 with a return code at byte 22: 2 no such file, 3 no such
 // folder, 4 a folder opened as a file, 6 no such handle, 13 not authorised (a path out of the IFS),
 // 23 a request it doesn't support. Each layout was checked against a real IBM i (datastream level
 // 24): the replies are the ones it sent, byte for byte where they matter to a client. Files open
-// for reading only; writing, creating and listing folders aren't supported yet (23).
+// for reading only; writing and creating aren't supported yet (23).
 // It logs each request and path, never a file's contents.
 
 using System.Buffers.Binary;
@@ -37,10 +39,11 @@ public sealed class FileServer : HostServer
     public const int MaxOpen = 256;
 
     public const int FileNotFound = 2, PathNotFound = 3, NotAFile = 4, InvalidHandle = 6, ResourceLimit = 11,
-        AccessDenied = 13, NotSupported = 23;
+        AccessDenied = 13, NoMoreFiles = 18, NotSupported = 23;
 
-    private const ushort Exchange = 22, Open = 2, Read = 3, Close = 9;
-    private const ushort ReturnCodeReply = 0x8001, OpenReply = 0x8002, ReadReply = 0x8003, CloseReply = 0x8004, ExchangeReply = 0x8009;
+    private const ushort Exchange = 22, Open = 2, Read = 3, Close = 9, List = 10;
+    private const ushort ReturnCodeReply = 0x8001, OpenReply = 0x8002, ReadReply = 0x8003, CloseReply = 0x8004, ListReply = 0x8005,
+        ExchangeReply = 0x8009;
 
     private const ushort AccessRead = 1;
 
@@ -88,6 +91,13 @@ public sealed class FileServer : HostServer
                 var correlation = CorrelationOf(request);
                 byte[] reply;
                 string what;
+                if (RequestIdOf(request) == List)
+                {
+                    var (replies, listed) = ListFolder(request, correlation);
+                    foreach (var each in replies) await stream.WriteAsync(each, Stopping);
+                    Log($"file #{id} {listed}");
+                    continue;
+                }
                 switch (RequestIdOf(request))
                 {
                     case Exchange:
@@ -201,6 +211,73 @@ public sealed class FileServer : HostServer
         }
         // Not chained, and binary (CCSID 65535).
         return (Frame(ServerId, ReadReply, [0, 0, 0xFF, 0xFF], correlation, 0, (0x0005, data)), $"{what}: {data.Length} bytes at {offset}");
+    }
+
+    /// <summary>
+    /// List attributes by name: the pattern is a folder and a name that may hold * and ?, found
+    /// whatever its case (folder/* lists the folder). Each entry is a reply of its own, chained,
+    /// then return code 18 ends the chain; the most entries at byte 34 is honoured (FFFF: no limit).
+    /// </summary>
+    private (List<byte[]> Replies, string What) ListFolder(byte[] request, int correlation)
+    {
+        if (request.Length < 46) throw new InvalidDataException("short list");
+        var templateLength = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(16));
+        var name = CodePoints(request, 20 + templateLength).GetValueOrDefault(0x0002);
+        if (name is null || name.Length % 2 != 0) throw new InvalidDataException("list without a name");
+        var pattern = Encoding.BigEndianUnicode.GetString(name);
+        var most = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(34)) is var m and > 0 and < 0xFFFF ? m : int.MaxValue;
+        var cut = pattern.LastIndexOf('/');
+        var folder = Ifs.Absolute(cut <= 0 ? "/" : pattern[..cut]);
+        var glob = pattern[(cut + 1)..] is { Length: > 0 } g ? g : "*";
+        var what = $"list {folder}";
+
+        string host;
+        try
+        {
+            host = Ifs.HostPath(folder);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return ([ReturnCode(correlation, AccessDenied)], what + ": rc 13");
+        }
+        if (!Directory.Exists(host)) return ([ReturnCode(correlation, PathNotFound)], what + ": rc 3");
+
+        var match = new System.Text.RegularExpressions.Regex(
+            "^" + System.Text.RegularExpressions.Regex.Escape(glob).Replace(@"\*", ".*").Replace(@"\?", ".") + "$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var replies = new List<byte[]>();
+        foreach (var entry in new DirectoryInfo(host).EnumerateFileSystemInfos().OrderBy(e => e.Name, StringComparer.Ordinal))
+        {
+            if (replies.Count >= most) break;
+            if (!match.IsMatch(entry.Name)) continue;
+            replies.Add(Entry(entry, correlation));
+        }
+        var count = replies.Count;
+        replies.Add(ReturnCode(correlation, NoMoreFiles));
+        return (replies, $"{what}: {count} entries");
+    }
+
+    /// <summary>
+    /// One entry, as the IBM i sends it (a 93-byte template): chained (1 at 20), the creation,
+    /// modification and access dates at 22, 30 and 38, the size at 46 (32-bit) and 81 (64-bit),
+    /// the fixed attributes at 50 (10 a folder, 20 a file), the object type at 54 (2 a folder, 1 a
+    /// file), then the name as code point 0002 (UTF-16).
+    /// </summary>
+    private static byte[] Entry(FileSystemInfo entry, int correlation)
+    {
+        var folder = entry is DirectoryInfo;
+        var size = entry is FileInfo file ? file.Length : 0;
+        var template = new byte[93];
+        var t = template.AsSpan();
+        BinaryPrimitives.WriteUInt16BigEndian(t, 1);
+        Date(t[2..], entry.CreationTimeUtc);
+        Date(t[10..], entry.LastWriteTimeUtc);
+        Date(t[18..], entry.LastAccessTimeUtc);
+        BinaryPrimitives.WriteUInt32BigEndian(t[26..], (uint)Math.Min(size, uint.MaxValue));
+        BinaryPrimitives.WriteInt32BigEndian(t[30..], folder ? 0x10 : 0x20);
+        BinaryPrimitives.WriteUInt16BigEndian(t[34..], folder ? (ushort)2 : (ushort)1);
+        BinaryPrimitives.WriteInt64BigEndian(t[61..], size);
+        return Frame(ServerId, ListReply, template, correlation, 0, (0x0002, Encoding.BigEndianUnicode.GetBytes(entry.Name)));
     }
 
     private static (byte[] Reply, string What) CloseFile(byte[] request, int correlation, Dictionary<int, FileStream> open)
