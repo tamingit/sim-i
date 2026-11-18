@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim i</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #5d6577; --line: #dde1e8; --accent: #2457c5;
+    --accent-ink: #ffffff; --error: #c62f2f; --tile-hover: #eef3ff;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1a1e26; --ink: #e5e8ef; --muted: #9aa3b5; --line: #2c3240; --accent: #6f9bff;
+      --accent-ink: #0b1020; --error: #ff7a7a; --tile-hover: #1f2a44;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151b; --panel: #1a1e26; --ink: #e5e8ef; --muted: #9aa3b5; --line: #2c3240; --accent: #6f9bff;
+    --accent-ink: #0b1020; --error: #ff7a7a; --tile-hover: #1f2a44;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+  button, input { font: inherit; color: inherit; }
+  button { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  input { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  input:focus, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hidden { display: none !important; }
+
+  #signon { min-height: 100%; display: grid; place-items: center; padding: 16px; }
+  #signon form { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 24px; width: min(360px, 100%); display: grid; gap: 12px; }
+  #signon h1 { margin: 0 0 4px; font-size: 20px; }
+  #signon label { display: grid; gap: 4px; color: var(--muted); font-size: 13px; }
+  .message { color: var(--error); min-height: 1.2em; font-size: 13px; }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0; flex: 1; }
+  header .who { color: var(--muted); font-size: 13px; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 40px; }
+  main p.intro { color: var(--muted); margin: 0 0 20px; }
+  #tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .tile { display: grid; grid-template-columns: 40px 1fr; gap: 4px 14px; align-items: start; padding: 16px; border: 1px solid var(--line);
+    border-radius: 10px; background: var(--panel); color: var(--ink); text-decoration: none; min-height: 96px; }
+  .tile:hover { border-color: var(--accent); background: var(--tile-hover); }
+  .tile svg { grid-row: span 2; width: 40px; height: 40px; color: var(--accent); }
+  .tile strong { font-size: 16px; }
+  .tile span { color: var(--muted); font-size: 13px; }
+  .tile.main { border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="signon" class="hidden">
+  <form id="signonForm">
+    <h1>Sim i</h1>
+    <div style="color:var(--muted);font-size:13px">Sign on with a user profile of Sim i system.</div>
+    <label>User <input id="user" autocomplete="username" required maxlength="10" autofocus></label>
+    <label>Password <input id="password" type="password" autocomplete="current-password" required></label>
+    <div class="message" id="signonMessage"></div>
+    <button class="primary" type="submit">Sign on</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>Sim i</h1>
+    <span class="who" id="who"></span>
+    <button id="signoff">Sign off</button>
+  </header>
+  <main>
+    <p class="intro">Each opens in a tab of its own, and this page stays here: click one again to go back to its tab.</p>
+    <nav id="tiles" aria-label="Sim i's apps"></nav>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+// Line icons, drawn in the tile's accent colour.
+const ICONS = {
+  code: '<path d="M14 12l-8 8 8 8M26 12l8 8-8 8M23 8l-6 24"/>',
+  terminal: '<rect x="4" y="7" width="32" height="26" rx="3"/><path d="M10 16l5 4-5 4M18 25h10"/>',
+  source: '<path d="M10 4h14l8 8v24H10z"/><path d="M24 4v8h8M15 20h12M15 25h12M15 30h8"/>',
+  profile: '<path d="M5 33h30"/><rect x="7" y="24" width="26" height="6"/><rect x="9" y="17" width="16" height="6"/><rect x="11" y="10" width="7" height="6"/>',
+  receive: '<path d="M20 5v19M12 16l8 8 8-8M6 28v6h28v-6"/>',
+};
+
+function tile(app) {
+  const link = document.createElement("a");
+  link.className = "tile" + (app.main ? " main" : "");
+  link.href = app.href;
+  link.target = "sim-i-" + app.id;
+  link.innerHTML = `<svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[app.icon]}</svg>`;
+  const name = document.createElement("strong");
+  name.textContent = app.name;
+  const what = document.createElement("span");
+  what.textContent = app.what;
+  link.append(name, what);
+  link.addEventListener("click", openApp);
+  return link;
+}
+
+// The app's tab when it's already open (left as it is: reloading it would cost its state), else a new one.
+function openApp(event) {
+  const link = event.currentTarget;
+  const tab = window.open("", link.target);
+  if (!tab) return;  // A blocked pop-up: the link's own target opens it.
+  event.preventDefault();
+  let blank = true;
+  try { blank = tab.location.href === "about:blank"; } catch { blank = false; }
+  if (blank) tab.location.href = link.href;
+  tab.focus();
+}
+
+async function api(method, url, body) {
+  const options = { method, headers: { "X-Sim-i": "1" }, credentials: "same-origin" };
+  if (body !== undefined) { options.body = JSON.stringify(body); options.headers["Content-Type"] = "application/json"; }
+  const response = await fetch(url, options);
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  // Someone who isn't in the administrators' group: to the terminal, which they sign on to.
+  if (response.status === 403 && data && data.redirect) { location.href = data.redirect; throw new Error(data.message); }
+  if (!response.ok) throw new Error((data && data.message) || response.statusText);
+  return data;
+}
+
+// Where to go after signing on: ?next=, when it's a path on this site (as the code-server gate sends).
+function nextPath() {
+  const next = new URLSearchParams(location.search).get("next");
+  return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : null;
+}
+
+// This page is the launchpad's tab: the apps' Launchpad links come back to it.
+window.name = "sim-i-home";
+
+function showSignon() { $("app").classList.add("hidden"); $("signon").classList.remove("hidden"); $("user").focus(); }
+
+function start(me) {
+  if (nextPath()) { location.replace(nextPath()); return; }
+  $("who").textContent = `${me.user} · ${me.library}`;
+  const links = me.links || {};
+  const apps = [
+    links.code && { id: "code", icon: "code", name: "Code", href: links.code, main: true,
+      what: "VS Code on the source: saving compiles it on Sim i, F5 debugs it." },
+    links.terminal && { id: "terminal", icon: "terminal", name: "Terminal", href: links.terminal, main: !links.code,
+      what: "5250 sessions in the browser (GreenGlow). Programs with screens run here when debugged." },
+    { id: "source", icon: "source", name: "Source editor", href: "/source", main: !links.code && !links.terminal,
+      what: "Source members in the browser: edit, upload, save and compile." },
+    { id: "profile", icon: "profile", name: "Profiles", href: "/profile",
+      what: "Where the last 30 program calls spent their time, as flame graphs." },
+    { id: "receive", icon: "receive", name: "Receive from an IBM i", href: "/receive",
+      what: "Copy a library's files and data from a real IBM i." },
+  ].filter(Boolean);
+  $("tiles").replaceChildren(...apps.map(tile));
+  $("signon").classList.add("hidden");
+  $("app").classList.remove("hidden");
+}
+
+$("signonForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  $("signonMessage").textContent = "";
+  try {
+    await api("POST", "/api/signon", { user: $("user").value, password: $("password").value });
+    $("password").value = "";
+    start(await api("GET", "/api/me"));
+  } catch (err) { $("signonMessage").textContent = err.message; }
+});
+
+$("signoff").addEventListener("click", async () => { try { await api("POST", "/api/signoff"); } finally { showSignon(); } });
+
+api("GET", "/api/me").then(start).catch(showSignon);
+</script>
+</body>
+</html>

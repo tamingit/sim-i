@@ -74,7 +74,9 @@ public class WebServerTests
         var (machine, server, client) = await Started();
         await using var _ = server;
         using var __ = machine;
-        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/")).StatusCode);
+        // The launchpad and its sign-on at /, the source editor at /source: pages anyone gets, their data only signed on.
+        Assert.Contains("id=\"tiles\"", await client.GetStringAsync("/"));
+        Assert.Contains("Save &amp; compile", await client.GetStringAsync("/source"));
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/members")).StatusCode);
         var wrong = await client.PostAsJsonAsync("/api/signon", new { user = "PRTUSER", password = "nope" });
         Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);

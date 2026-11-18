@@ -72,7 +72,8 @@
 <body>
 <header>
   <h1>Program profiles</h1>
-  <a id="sourceLink" href="/">Source editor</a>
+  <a href="/" data-app="home" title="Sim i's launchpad">Launchpad</a>
+  <a href="/source" data-app="source">Source editor</a>
   <a id="codeLink" class="hidden" href="#" title="VS Code in the browser, on /source">Code</a>
   <a id="terminalLink" class="hidden" href="#" title="5250 sessions in the browser (GreenGlow)">Terminal</a>
 </header>
@@ -138,13 +139,15 @@ const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", mi
 // code-server (the developer's only) and the terminal, when they're on this site. Each opens in a tab of its own,
 // named, so this page stays put and clicking again goes back to that tab rather than opening another.
 function showLinks(links) {
-  // With code-server, it's the editor: / goes there.
-  $("sourceLink").classList.toggle("hidden", !!(links && links.code));
   for (const [id, href] of [["codeLink", links && links.code], ["terminalLink", links && links.terminal]]) {
-    if (href) { $(id).href = href; $(id).target = "sim-i-" + id; $(id).onclick = openApp; }
+    if (href) { $(id).href = href; $(id).target = "sim-i-" + id.replace("Link", ""); $(id).onclick = openApp; }
     $(id).classList.toggle("hidden", !href);
   }
 }
+
+// This page is the "profile" tab, and its header's links open the others' tabs, as the launchpad does.
+window.name = "sim-i-profile";
+for (const link of document.querySelectorAll("header a[data-app]")) { link.target = "sim-i-" + link.dataset.app; link.addEventListener("click", openApp); }
 
 // The app's tab when it's already open (left as it is: reloading it would cost its state), else a new one.
 function openApp(event) {

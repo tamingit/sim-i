@@ -205,6 +205,20 @@ async function upload(uris, quiet) {
 // ---- debugging ----
 
 class Configurations {
+  /**
+   * F5 with no launch.json: VS Code asks this first, with an empty configuration, and gives up silently when no
+   * provider gives it a type. With an RPG source file open, it's a launch of that file's program.
+   */
+  resolveDebugConfiguration(folder, config) {
+    if (config.type || config.request || config.name) return config;
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !isSource(editor.document.uri)) {
+      vscode.window.showInformationMessage("Sim i: open an RPG source file to debug its program.");
+      return undefined;
+    }
+    return { type: "sim-i", request: "launch", name: "Sim i: call this program" };
+  }
+
   /** A launch or attach configuration with what Sim i's debug server needs: where it is, who signs on, and the workspace's source files. */
   async resolveDebugConfigurationWithSubstitutedVariables(folder, config) {
     const editor = vscode.window.activeTextEditor;

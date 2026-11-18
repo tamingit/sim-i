@@ -146,7 +146,16 @@ public sealed class WebServer : IAsyncDisposable
 
     private void Map(Action<string> log, Users users, Machine machine)
     {
+        // The launchpad (and sign-on): each app opens from it in a tab of its own.
         _app.MapGet("/", async context =>
+        {
+            context.Response.ContentType = "text/html; charset=utf-8";
+            context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";
+            await using var page = typeof(WebServer).Assembly.GetManifestResourceStream("Web/home.html")!;
+            await page.CopyToAsync(context.Response.Body);
+        });
+
+        _app.MapGet("/source", async context =>
         {
             context.Response.ContentType = "text/html; charset=utf-8";
             context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";

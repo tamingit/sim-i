@@ -116,8 +116,9 @@
 <div id="app" class="hidden">
   <header>
     <h1>Sim i source</h1>
-    <a href="/receive" title="Receive a library from a real IBM i">Receive from an IBM i</a>
-    <a href="/profile" title="Where recent program calls spent their time">Profiles</a>
+    <a href="/" data-app="home" title="Sim i's launchpad">Launchpad</a>
+    <a href="/receive" data-app="receive" title="Receive a library from a real IBM i">Receive from an IBM i</a>
+    <a href="/profile" data-app="profile" title="Where recent program calls spent their time">Profiles</a>
     <a id="codeLink" class="hidden" href="#" title="VS Code in the browser, on /source">Code</a>
     <a id="terminalLink" class="hidden" href="#" title="5250 sessions in the browser (GreenGlow)">Terminal</a>
     <span class="who" id="who"></span>
@@ -206,10 +207,14 @@ function el(tag, attrs, ...children) {
 // named, so this page stays put and clicking again goes back to that tab rather than opening another.
 function showLinks(links) {
   for (const [id, href] of [["codeLink", links && links.code], ["terminalLink", links && links.terminal]]) {
-    if (href) { $(id).href = href; $(id).target = "sim-i-" + id; $(id).onclick = openApp; }
+    if (href) { $(id).href = href; $(id).target = "sim-i-" + id.replace("Link", ""); $(id).onclick = openApp; }
     $(id).classList.toggle("hidden", !href);
   }
 }
+
+// This page is the "source" tab, and its header's links open the others' tabs, as the launchpad does.
+window.name = "sim-i-source";
+for (const link of document.querySelectorAll("header a[data-app]")) { link.target = "sim-i-" + link.dataset.app; link.addEventListener("click", openApp); }
 
 // The app's tab when it's already open (left as it is: reloading it would cost its state), else a new one.
 function openApp(event) {
@@ -233,8 +238,6 @@ function showSignon() { $("app").classList.add("hidden"); $("signon").classList.
 
 async function start(me) {
   if (nextPath()) { location.href = nextPath(); return; }
-  // code-server is the developer's editor: this page's is for those without it (and for Sim i run without code-server).
-  if (me.links && me.links.code) { location.replace(me.links.code); return; }
   state.user = me.user;
   showLinks(me.links);
   $("who").textContent = `${me.user} · ${me.library}`;
