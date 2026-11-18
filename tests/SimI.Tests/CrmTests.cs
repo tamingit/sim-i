@@ -2,19 +2,11 @@ using SimI.Tests.Client;
 
 namespace SimI.Tests;
 
-/// <summary>The CRM demo in examples/crm: its tables, sample data, programs and screens.</summary>
+/// <summary>The CRM demo in examples/source/CRMDEMO: its tables, sample data, programs and screens.</summary>
 public class CrmTests
 {
-    /// <summary>The folder of the CRM's source: examples/crm, found from where the tests run.</summary>
-    internal static string SourceDir()
-    {
-        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, "examples", "crm");
-            if (Directory.Exists(candidate)) return candidate;
-        }
-        throw new DirectoryNotFoundException("examples/crm");
-    }
+    /// <summary>A source folder holding only the CRM's library, CRMDEMO.</summary>
+    internal static string SourceDir() => Examples.CrmSource();
 
     private static string Member(string file, string name) =>
         File.ReadAllText(Directory.EnumerateFiles(Path.Combine(SourceDir(), "CRMDEMO", file), name + ".*").Single());

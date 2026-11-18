@@ -25,6 +25,9 @@ RUN dotnet publish src/SimI/SimI.csproj -c Release --no-restore -o /app
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app ./
+# The VS Code extension, for a code-server image to copy (COPY --from=ghcr.io/tamingit/sim-i:TAG /opt/sim-i/vscode-extension):
+# examples/code-server does.
+COPY vscode/sim-i /opt/sim-i/vscode-extension
 RUN mkdir /certs /ifs && chown app /certs /ifs
 USER app
 EXPOSE 2323 992 8474 9474 8475 9475 8476 9476 8473 9473 449 8080 4711

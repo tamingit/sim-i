@@ -105,7 +105,9 @@ services:
         SIM_I_UID: ${SIM_I_UID:-1000}
         SIM_I_GID: ${SIM_I_GID:-1000}
     depends_on: [sim-i]
-    command: ["--auth", "none", "--bind-addr", "0.0.0.0:8080", "--disable-telemetry", "--disable-update-check", "/source"]
+    # Workspace trust off: /source is the developer's own, and in Restricted Mode the Sim i extension wouldn't run.
+    command: ["--auth", "none", "--bind-addr", "0.0.0.0:8080", "--disable-telemetry", "--disable-update-check",
+              "--disable-workspace-trust", "/source"]
     environment:
       SIM_I_DEVELOPER_USER: ${SIM_I_DEVELOPER_USER:-}
       SIM_I_GIT_NAME: ${SIM_I_GIT_NAME:-}

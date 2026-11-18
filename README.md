@@ -22,12 +22,12 @@ You need Docker with the compose plugin. Sim i runs in one container and Postgre
     QSQLSRC/tables.sql
 ```
 
-No source yet? Use `examples/customers` from this repository.
+No source yet? Use `examples/source` from this repository, or run the examples as they are: `cd examples && docker compose up --build` starts everything with a developer `DEV` / `ChangeMe!` (see `examples/compose.yml` and `examples/.env`).
 
 **2. Point Sim i at it.** Put a `.env` beside `compose.yaml` naming the folder, who owns it, and a developer for yourself (see `.env.example`):
 
 ```bash
-SIM_I_SOURCE=/home/you/work/erp/source   # or ./examples/customers; ./source when it's left out
+SIM_I_SOURCE=/home/you/work/erp/source   # or ./examples/source; ./source when it's left out
 SIM_I_UID=1000                           # id -u: code-server edits the folder as this user
 SIM_I_GID=1000                           # id -g
 SIM_I_DEVELOPER_USER=YOU
@@ -51,7 +51,7 @@ This builds the images, starts PostgreSQL 17, waits until it's ready, then start
 
 - **Web editor:** <http://localhost:8080/>, signing on as your developer.
 - **code-server:** <http://localhost:8080/code/>, VS Code on your source folder, for the developer only.
-- **5250:** any TN5250 client on `localhost` port 2323. With `examples/customers`, enter `CALL DEMOLIB/CUSTMNT`.
+- **5250:** any TN5250 client on `localhost` port 2323. With `examples/source`, enter `CALL DEMOCUST/CUSTMNT`.
 - **VS Code:** the debug server is on port 4711 (the extension is in `vscode/sim-i`).
 
 Change a member on your machine and restart (`docker compose restart sim-i`): only what changed is made again. The database, the IFS and the TLS certificate are kept in named volumes; `docker compose down -v` throws them away and starts clean.
@@ -166,17 +166,17 @@ The command's message says how many objects and records came, and the spooled fi
 
 <a id="cl"></a>*CL:* `CRTBNDCL` makes a program from CLLE source, which runs `PGM`, `DCL` (`*CHAR`, `*DEC`, `*INT`, `*LGL`), `CHGVAR`, `IF`/`ELSE`, `DO`, `DOWHILE`, `DOUNTIL`, `DOFOR`, `SELECT`/`WHEN`/`OTHERWISE`, `LEAVE`, `ITERATE`, `SUBR`/`CALLSUBR`, `MONMSG` (on a command or the program, `CPF0000`-style generic ids), `CALL` with variables by reference, `SNDPGMMSG` (`*ESCAPE` ends the program; `*COMP` shows on the command line; `*STATUS` on the message line) and `RETURN`; expressions with `*EQ` and the like, `*AND`, `*OR`, `*NOT`, `*CAT`, `*BCAT`, `*TCAT`, arithmetic and `%SST`. Any other command runs as if typed, with `&VARIABLES` put in. `CRTCMD CMD(..) PGM(..)` makes a command from CMD source (`PARM` with `TYPE`, `LEN`, `DFT`, `RSTD`, `VALUES`), checked and run as typed: `LIB/CMD value`. The build commands: `CRTSQLRPGI ... OBJTYPE(*MODULE)`, `CRTRPGMOD`, `CRTSRVPGM`, `CRTPGM`, `CRTBNDDIR`, `ADDBNDDIRE`, `CRTPRTF`; and `ADDLIBLE`, `RMVLIBLE`, `OVRPRTF`, `DLTOVR`, `CHKOBJ`. `SNDSMTPEMM` sends nothing: it answers success for an address with an `@`. The user profile commands work on the [users](#users): `CRTUSRPRF` (`PASSWORD` a value, `*USRPRF`, the default, for the profile's name, or `*NONE`; `STATUS`, `PWDEXP`, `TEXT`, `CURLIB` for the default library, `GRPPRF`, `SUPGRPPRF` and `SPCAUT`), `CHGUSRPRF` (the same; what it doesn't name is kept), `DLTUSRPRF`, and `DSPUSRPRF`, which answers with a line about the profile (`TYPE(*GRPMBR)`: its members), never its password. `GRTOBJAUT` and the like do nothing. `RUNSQLSTM ... ERRLVL(30)` or above doesn't fail for statements on tables that aren't there.
 
-The examples are in `examples/`: `source` (a hello program and a customer list), `customers` (a customer maintenance program with a 50-customer table, a list with search, lookup, create and print), `users` (user maintenance, see [Users](#users)) and `crm` (a CRM of 12 SQLRPGLE programs, a service program, windows, 27 × 132 screens, a dashboard that refreshes itself, printed reports, a CL build and a command; see below).
+The examples are in `examples/source`, a library to a folder: `DEMOLIB` (a hello program and a customer list), `DEMOCUST` (a customer maintenance program with a 50-customer table, a list with search, lookup, create and print) and `CRMDEMO` (a CRM of 12 SQLRPGLE programs, a service program, windows, 27 × 132 screens, a dashboard that refreshes itself, printed reports, a CL build and a command; see below). `examples/compose.yml` runs them with everything in `compose.yaml` and the settings in `examples/.env`.
 
 ```bash
-dotnet run --project src/SimI -- --source-dir examples/customers --print-port 8474
-# then sign on at port 2323 and enter: CALL CUSTMNT
+dotnet run --project src/SimI -- --source-dir examples/source --print-port 8474
+# then sign on at port 2323 and enter: CALL DEMOCUST/CUSTMNT
 ```
 
-The CRM (`examples/crm`, library `CRMDEMO`, described in its README) is built by its own CL program, as on an IBM i. Start Sim i with it, make its three users (System Options, option 1, or SQL on `QSIM_USER`: `CRMUSR1`, `CRMUSR2` and `CRMUSR3`), then on the command line:
+The CRM (library `CRMDEMO`, described in its README) is built by its own CL program, as on an IBM i. Start Sim i with it, make its three users (System Options, option 1, or SQL on `QSIM_USER`: `CRMUSR1`, `CRMUSR2` and `CRMUSR3`), then on the command line:
 
 ```bash
-dotnet run --project src/SimI -- --source-dir examples/crm --print-port 8474
+dotnet run --project src/SimI -- --source-dir examples/source --print-port 8474
 # CALL CRMDEMO/CRMBUILD PARM('*YES')    tables, sample data, files, service program, programs, the CRM command
 # CRMDEMO/CRM                           the menu; CRMDEMO/CRM *DASH for the dashboard (a 27 x 132 session)
 ```
@@ -342,7 +342,7 @@ docker run --rm --env-file .env -e SIM_I_DATABASE="Host=db.example;Database=simi
 ```
 
 - **Ports:** publish each port on the same number: the port mapper tells clients the ports inside the container.
-- **Database:** the image keeps everything in the PostgreSQL database `SIM_I_DATABASE` names (compose.yaml runs one beside it). To load source, mount a folder with a folder for each library, and name it with `--source-dir` (or `-e SIM_I_SOURCE_DIR=/source`, which also overrides a `.env` that names a folder on the host): `-v "$PWD/examples/customers:/source:ro" ... ghcr.io/tamingit/sim-i:prod --source-dir /source`. The IFS is `/ifs`: mount a named volume there to keep it.
+- **Database:** the image keeps everything in the PostgreSQL database `SIM_I_DATABASE` names (compose.yaml runs one beside it). To load source, mount a folder with a folder for each library, and name it with `--source-dir` (or `-e SIM_I_SOURCE_DIR=/source`, which also overrides a `.env` that names a folder on the host): `-v "$PWD/examples/source:/source:ro" ... ghcr.io/tamingit/sim-i:prod --source-dir /source`. The IFS is `/ifs`: mount a named volume there to keep it.
 - **Certificate:** the image keeps its certificate in `/certs`. The named volume keeps it from one run to the next, so clients only need to trust it once. Copy out the part to trust with `docker cp <container>:/certs/sim-i.crt .`. Use a named volume rather than a directory: Sim i runs as a non-root user, which can't write to a directory you mount.
 
 With the .NET 10 SDK:

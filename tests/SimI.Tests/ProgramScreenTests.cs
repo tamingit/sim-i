@@ -550,20 +550,13 @@ public class ProgramScreenTests
         ], found.Where(d => d.Severity != Severity.Info).Select(d => (d.Line, d.Message)));
     }
 
-    /// <summary>The repository's examples/source folder.</summary>
-    private static string Examples()
-    {
-        var folder = new DirectoryInfo(AppContext.BaseDirectory);
-        while (folder is not null && !Directory.Exists(Path.Combine(folder.FullName, "examples", "source"))) folder = folder.Parent;
-        return Path.Combine(folder!.FullName, "examples", "source");
-    }
 
     [Fact]
     public async Task TheExamplesAreSupportedAndTheCustomerListWorks()
     {
         using var machine = Machine.Open();
         var lines = new List<string>();
-        Assert.Equal(0, machine.Import(Examples(), lines.Add));
+        Assert.Equal(0, machine.Import(Examples.Source(), lines.Add));
         Assert.DoesNotContain(lines, l => l.Contains("warning") || l.Contains("not supported"));
         await using var host = await TelnetServer.StartAsync(machine: machine);
         await using var client = await SignOnAsync(host);
@@ -813,7 +806,7 @@ public class ProgramScreenTests
     {
         using var machine = Machine.Open();
         var lines = new List<string>();
-        Assert.Equal(0, machine.Import(Path.Combine(Examples(), "..", "customers"), lines.Add));
+        Assert.Equal(0, machine.Import(Examples.CustomersSource(), lines.Add));
         Assert.DoesNotContain(lines, l => l.Contains("warning") || l.Contains("not supported"));
         lock (machine.Store.Gate)
         {
