@@ -664,8 +664,8 @@ public sealed class TelnetServer : IAsyncDisposable
                 case SignOnResult.UnknownUser:
                     Log($"sign-on rejected: no user {user}");
                     return (Screen.SignOn, $"User {user} does not exist.");
-                case SignOnResult.WrongPassword:
-                    Log($"sign-on rejected: wrong password for {user}");
+                case SignOnResult.WrongPassword or SignOnResult.NoPassword:
+                    Log($"sign-on rejected: {(result == SignOnResult.NoPassword ? "no password (*NONE)" : "wrong password")} for {user}");
                     return (Screen.SignOn, "Password not correct for user profile.");
                 case SignOnResult.Disabled:
                     Log($"sign-on rejected: {user} is disabled");

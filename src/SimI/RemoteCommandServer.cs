@@ -29,8 +29,12 @@ public sealed class RemoteCommandServer : HostServer
     /// <summary>The data stream level it claims. 10 and up sends commands in UTF-16 (CCSID 1200).</summary>
     private const ushort DataStreamLevel = 10;
 
-    // Parameter usages in a call program request, as JTOpen sends them.
+    // Parameter usages in a call program request, as JTOpen sends them. Older clients send 1, 2 and 3, or 11, 12
+    // and 13 (no compression); an IBM i takes them all, and so does Sim i.
     private const int Output = 22;
+    private const int OutputUncompressed = 12;
+    private const int OutputLevel0 = 2;
+    private const int InOutLevel0 = 3;
     private const int InOutCompressed = 23;
     private const int InOut = 13;
     private const int InOutLevel5 = 33;
@@ -171,8 +175,8 @@ public sealed class RemoteCommandServer : HostServer
             var input = usage is InputCompressed or InOutCompressed ? Rle.Decompress(data, maxLength) : Padded(data, maxLength);
             var kind = usage switch
             {
-                Output => ParameterKind.Output,
-                InOut or InOutLevel5 or InOutCompressed => ParameterKind.InOut,
+                Output or OutputUncompressed or OutputLevel0 => ParameterKind.Output,
+                InOut or InOutLevel5 or InOutCompressed or InOutLevel0 => ParameterKind.InOut,
                 0xFF => ParameterKind.Null,
                 _ => ParameterKind.Input,
             };
@@ -332,6 +336,30 @@ public sealed class RemoteCommandServer : HostServer
             // (IBM's API documentation); ACS refuses the feature on '1'.
             case "QSYS/QSYCKUFU" when parameters.Count >= 3 && parameters[0].Kind == ParameterKind.Output:
                 return (new() { [0] = [0xF2] }, $"answered {Text(1, 30)} allowed for {Text(2, 10)}");
+            // Retrieve User Information: receiver, its length, format (USRI0200 or USRI0300), user profile (*CURRENT is
+            // the signed-on user), error code. GreenGlow Connect calls it to see a profile's groups and special authorities.
+            case "QSYS/QSYRUSRI" when parameters.Count >= 5 && parameters[0].Kind == ParameterKind.Output:
+            {
+                var format = Text(2, 8);
+                var name = Text(3, 10) is var asked && asked == "*CURRENT" ? user : asked;
+                var length = Math.Min(parameters[0].MaxLength, BinaryPrimitives.ReadInt32BigEndian(Padded(parameters[1].Input, 4)));
+                var error = Padded(parameters[4].Input, parameters[4].MaxLength);
+                string? exception = format is not ("USRI0200" or "USRI0300") ? "CPF3C21" // format not valid
+                    : Users.Find(name) is null ? "CPF2204" // user profile not found
+                    : null;
+                if (exception is not null)
+                {
+                    // With no room for an error (bytes provided 0), the API signals it and the call fails.
+                    if (BinaryPrimitives.ReadInt32BigEndian(error) < 8) return (null, $"failed: {exception} for {name} ({format})");
+                    BinaryPrimitives.WriteInt32BigEndian(error.AsSpan(4), Math.Min(BinaryPrimitives.ReadInt32BigEndian(error), 15));
+                    if (error.Length >= 15) Ebcdic.Encode(exception).CopyTo(error, 8);
+                    return (new() { [4] = error }, $"answered {exception} for {name} ({format})");
+                }
+                var receiver = UserInformation(Users.Find(name)!, format);
+                BinaryPrimitives.WriteInt32BigEndian(receiver, Math.Min(receiver.Length, length));
+                return (new() { [0] = receiver.Length > length ? receiver[..length] : receiver },
+                    $"answered {format} for {name}");
+            }
             // The open list of spooled files, as JTOpen's SpooledFileOpenList (ACS's printer output) asks: build
             // it (the list information comes back in parameter 2), get entries from it, close it.
             case "QSYS/QGYOLSPL" when parameters.Count >= 8:
@@ -378,6 +406,32 @@ public sealed class RemoteCommandServer : HostServer
             default:
                 return ([], "answered success with zeros");
         }
+    }
+
+    /// <summary>
+    /// QSYRUSRI's USRI0200 or USRI0300 (IBM's offsets): bytes returned and available, the profile's name, user class,
+    /// special authorities (15 flags, Y or N, in Users.SpecialAuthorityNames's order), group profile, owner, group
+    /// authority, and the offset and count of the supplemental groups, which follow the fixed part.
+    /// </summary>
+    private static byte[] UserInformation(UserProfile profile, string format)
+    {
+        var usri0300 = format == "USRI0300";
+        var (fixedLength, classAt, groupsOffsetAt) = usri0300 ? (720, 73, 584) : (104, 18, 96);
+        var groups = profile.SupplementalGroups;
+        var receiver = new byte[fixedLength + groups.Count * 10];
+        void Text(int at, int length, string value) => Ebcdic.Encode(value.PadRight(length)[..length]).CopyTo(receiver, at);
+        BinaryPrimitives.WriteInt32BigEndian(receiver.AsSpan(4), receiver.Length);
+        Text(8, 10, profile.User);
+        Text(classAt, 10, profile.SpecialAuthorities.Contains("*ALLOBJ") ? "*SECOFR" : "*USER");
+        Text(classAt + 10, 15, string.Concat(Enumerable.Range(0, 15).Select(i =>
+            i < Users.SpecialAuthorityNames.Count && profile.SpecialAuthorities.Contains(Users.SpecialAuthorityNames[i]) ? "Y" : "N")));
+        Text(classAt + 25, 10, profile.GroupProfile ?? "*NONE");
+        Text(classAt + 35, 10, "*USRPRF");
+        Text(classAt + 45, 10, "*NONE");
+        BinaryPrimitives.WriteInt32BigEndian(receiver.AsSpan(groupsOffsetAt), groups.Count == 0 ? 0 : fixedLength);
+        BinaryPrimitives.WriteInt32BigEndian(receiver.AsSpan(groupsOffsetAt + 4), groups.Count);
+        for (var i = 0; i < groups.Count; i++) Text(fixedLength + i * 10, 10, groups[i]);
+        return receiver;
     }
 
     private static byte[] Padded(ReadOnlySpan<byte> data, int length)

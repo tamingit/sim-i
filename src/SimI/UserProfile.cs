@@ -14,6 +14,18 @@ public sealed class UserProfile(string user, string password, bool passwordExpir
     /// <summary>The library this user's names are looked for in first, and new source goes to (QGPL unless set).</summary>
     public string DefaultLibrary { get; init; } = "QGPL";
 
+    /// <summary>Its group profile (GRPPRF), or null for *NONE.</summary>
+    public string? GroupProfile { get; init; }
+
+    /// <summary>Its supplemental group profiles (SUPGRPPRF): up to 15, and only with a group profile.</summary>
+    public IReadOnlyList<string> SupplementalGroups { get; init; } = [];
+
+    /// <summary>Its special authorities (SPCAUT), such as *SECADM; none for *NONE.</summary>
+    public IReadOnlyList<string> SpecialAuthorities { get; init; } = [];
+
+    /// <summary>PASSWORD(*NONE): it can't sign on with any password, as a group profile usually can't.</summary>
+    public bool HasNoPassword => Password == Users.NoPassword;
+
     /// <summary>Called after a password or flag changes, to keep it (the database's users do).</summary>
     internal Action<UserProfile>? Changed { get; set; }
 
@@ -80,6 +92,9 @@ public enum SignOnResult
 
     /// <summary>The password is right, but has to be changed before it signs on.</summary>
     PasswordExpired,
+
+    /// <summary>PASSWORD(*NONE): the profile can't sign on with any password.</summary>
+    NoPassword,
 }
 
 /// <summary>
@@ -96,6 +111,16 @@ public sealed class Users
     public const string DefaultLockedUser = "LOCKUSER";
     public const string DefaultLockedPassword = "Locked12";
 
+    /// <summary>The password of a profile that can't sign on: PASSWORD(*NONE), as a group profile usually has.</summary>
+    public const string NoPassword = "*NONE";
+
+    /// <summary>The special authorities a profile can have (SPCAUT), in the order QSYRUSRI reports them.</summary>
+    public static readonly IReadOnlyList<string> SpecialAuthorityNames =
+        ["*ALLOBJ", "*SECADM", "*JOBCTL", "*SPLCTL", "*SAVSYS", "*SERVICE", "*AUDIT", "*IOSYSCFG"];
+
+    /// <summary>The most supplemental group profiles one profile can have.</summary>
+    public const int MaxSupplementalGroups = 15;
+
     /// <summary>The environment variables that set the users, as .env.example lists them.</summary>
     public static readonly string[] Variables =
     [
@@ -105,6 +130,9 @@ public sealed class Users
     ];
 
     private static readonly Regex UserName = new("^[A-Z#$@][A-Z0-9#$@_]{0,9}$");
+
+    /// <summary>Whether this is a user profile name: 1 to 10 letters, digits, #, $, @ and _, not starting with a digit or _.</summary>
+    public static bool IsUserName(string name) => UserName.IsMatch(name);
 
     private readonly object _gate = new();
     private readonly Store? _store;
@@ -144,9 +172,11 @@ public sealed class Users
         {
             var text = profile == defaults._main ? "Signs on normally" : profile.Disabled ? "Disabled" : "Password expired";
             var existing = store.FindUser(profile.User);
+            // Its name, password and flags come from the settings; the rest is kept as the table has it.
             store.SaveUser(new UserRow(profile.User, profile.Password, profile.Disabled ? "*DISABLED" : "*ENABLED",
                 profile.PasswordExpired ? "*YES" : "*NO", existing?.Text is { Length: > 0 } kept ? kept : text,
-                existing?.DefaultLibrary ?? Store.Current));
+                existing?.DefaultLibrary ?? Store.Current, existing?.GroupProfile ?? "*NONE", existing?.SupplementalGroups ?? "",
+                existing?.SpecialAuthorities ?? "*NONE"));
         }
         return new Users(store, defaults._main);
     }
@@ -155,8 +185,22 @@ public sealed class Users
         new(row.User, row.Password, row.PasswordExpired == "*YES", row.Status == "*DISABLED")
         {
             DefaultLibrary = row.DefaultLibrary,
+            GroupProfile = row.GroupProfile is "" or "*NONE" ? null : row.GroupProfile,
+            SupplementalGroups = Names(row.SupplementalGroups),
+            SpecialAuthorities = Names(row.SpecialAuthorities).Where(a => a != "*NONE").ToList(),
             Changed = p => _store!.UpdateUser(p.User, p.Password, p.Disabled, p.PasswordExpired),
         };
+
+    /// <summary>A list kept as names separated by blanks, upper case.</summary>
+    internal static IReadOnlyList<string> Names(string text) =>
+        text.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(n => n.ToUpperInvariant()).ToList();
+
+    /// <summary>The profiles whose group profile, or one of whose supplemental groups, is <paramref name="group"/>.</summary>
+    public IReadOnlyList<string> Members(string group)
+    {
+        var name = group.Trim().ToUpperInvariant();
+        return [.. All.Where(p => p.GroupProfile == name || p.SupplementalGroups.Contains(name)).Select(p => p.User)];
+    }
 
     /// <summary>QPWDLVL: 0 or 1 for DES substitutes (passwords up to 10 characters, any case), 2 or 3 for SHA-1.</summary>
     public int PasswordLevel
@@ -205,6 +249,7 @@ public sealed class Users
         var profile = Find(user);
         if (profile is null) return (SignOnResult.UnknownUser, null);
         if (profile.Disabled) return (SignOnResult.Disabled, profile);
+        if (profile.HasNoPassword) return (SignOnResult.NoPassword, profile);
         if (!PasswordMatches(profile, password)) return (SignOnResult.WrongPassword, profile);
         if (profile.PasswordExpired) return (SignOnResult.PasswordExpired, profile);
         NoteSignOn(profile);

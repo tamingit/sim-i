@@ -664,6 +664,103 @@ public class ProgramScreenTests
     }
 
     [Fact]
+    public async Task TheUserAppMakesGroupProfilesAndSaysWhoIsInThem()
+    {
+        using var machine = Machine.Open();
+        machine.InstallSystemSource();
+        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        await using var host = await TelnetServer.StartAsync(users: users, machine: machine);
+        await using var client = await SignOnAsync(host);
+        await CommandAsync(client, "wrkusrprf");
+        await client.WaitForTextAsync("Work with Users");
+
+        // A group profile: password *NONE (no confirmation needed), so nobody signs on as it.
+        await client.PressAsync(new FunctionKey("F6"));
+        await client.WaitForTextAsync("Create User");
+        await TypeAtAsync(client, 4, 25, "ggadmin");
+        await TypeAtAsync(client, 5, 25, "*none");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("User GGADMIN created.");
+        Assert.Equal(SignOnResult.NoPassword, users.Check("GGADMIN", Users.NoPassword).Result);
+
+        // A member: the group must be one there is, and the special authorities ones an IBM i has.
+        await client.PressAsync(new FunctionKey("F6"));
+        await client.WaitForTextAsync("Create User");
+        await TypeAtAsync(client, 4, 25, "alice");
+        await TypeAtAsync(client, 5, 25, "Alice123");
+        await TypeAtAsync(client, 6, 25, "Alice123");
+        await TypeAtAsync(client, 11, 25, "nobody");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("Group profile: *NONE, or another");
+        await TypeAtAsync(client, 11, 25, "ggadmin   ");
+        await TypeAtAsync(client, 12, 25, "prtuser");
+        await TypeAtAsync(client, 13, 25, "*secadm *bogus");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("Special authorities are");
+        await TypeAtAsync(client, 13, 25, "*secadm       ");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("User ALICE created.");
+        var alice = users.Find("ALICE")!;
+        Assert.Equal("GGADMIN", alice.GroupProfile);
+        Assert.Equal(["PRTUSER"], alice.SupplementalGroups);
+        Assert.Equal(["*SECADM"], alice.SpecialAuthorities);
+        Assert.Contains("GGADMIN", client.Text());
+
+        // By name: ALICE, EXPUSER, GGADMIN (row 9). 5 lists its members; 4 won't delete it while it has them.
+        await TypeAtAsync(client, 9, 3, "5");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("Members of GGADMIN: ALICE");
+        await TypeAtAsync(client, 9, 3, "4");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("GGADMIN is the group profile of 1 users");
+        Assert.NotNull(users.Find("GGADMIN"));
+
+        // ...nor give it a group of its own.
+        await TypeAtAsync(client, 9, 3, "2");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("Change User");
+        await TypeAtAsync(client, 11, 25, "prtuser   ");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("Group profile: *NONE, or another");
+        await client.PressAsync(new FunctionKey("F12"));
+        await client.WaitForTextAsync("Work with Users");
+        Assert.Null(users.Find("GGADMIN")!.GroupProfile);
+
+        // ALICE leaves the group (and so its supplemental group goes too), then GGADMIN can go.
+        await TypeAtAsync(client, 7, 3, "2");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("Change User");
+        await TypeAtAsync(client, 11, 25, "*none     ");
+        await TypeAtAsync(client, 12, 25, "          ");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("User ALICE changed.");
+        Assert.Null(users.Find("ALICE")!.GroupProfile);
+        Assert.Equal(SignOnResult.SignedOn, users.Check("ALICE", "Alice123").Result);
+        await TypeAtAsync(client, 9, 3, "4");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("Delete User");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("User GGADMIN deleted.");
+    }
+
+    [Fact]
+    public void TheUserAppAsAnEarlierSimIShippedItIsBroughtUpToDate()
+    {
+        using var machine = Machine.Open();
+        var fixtures = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+        machine.Save(new Member("QGPL", "QRPGLESRC", "USRMNT", "SQLRPGLE", File.ReadAllText(Path.Combine(fixtures, "usrmnt-1.sqlrpgle"))));
+        machine.Save(new Member("QGPL", "QDDSSRC", "USRMNTD", "DSPF", File.ReadAllText(Path.Combine(fixtures, "usrmntd-1.dspf"))));
+        Assert.Equal(["QGPL/QDDSSRC(USRMNTD)", "QGPL/QRPGLESRC(USRMNT)"], machine.InstallSystemSource().Select(m => m.ToString()));
+        Assert.Contains("GRPPRF", machine.Store.FindMember("QGPL", "QRPGLESRC", "USRMNT")!.Source, StringComparison.OrdinalIgnoreCase);
+
+        // A copy someone changed is theirs: it stays.
+        var mine = machine.Store.FindMember("QGPL", "QRPGLESRC", "USRMNT")!;
+        machine.Save(mine with { Source = mine.Source + "// mine\n" });
+        Assert.Empty(machine.InstallSystemSource());
+        Assert.EndsWith("// mine\n", machine.Store.FindMember("QGPL", "QRPGLESRC", "USRMNT")!.Source);
+    }
+
+    [Fact]
     public async Task WrkLibListsMakesAndDeletesLibraries()
     {
         using var machine = Machine.Open();
