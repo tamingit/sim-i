@@ -171,7 +171,7 @@ public class DebugTests
         machine.Save(member);
         var compiled = machine.Compile(member);
         Assert.True(compiled.Ok, compiled.Message);
-        var server = await DapServer.StartAsync(0, _ => { }, IPAddress.Loopback, Users.Open(machine.Store, new Dictionary<string, string>()), machine);
+        var server = await DapServer.StartAsync(0, _ => { }, IPAddress.Loopback, Users.Open(machine.Store, TestUsers.Settings()), machine);
         return (machine, server);
     }
 

@@ -7,6 +7,10 @@
 // it lists what the remote library holds with each object's size there and an estimate of the room
 // it takes here, beside the room the database has, and then receives what's chosen while showing
 // how far it is.
+//
+// With a developer in the settings (SIM_I_DEVELOPER_USER), only the administrators' group's members use these pages; anyone
+// else who signs on is sent to the terminal (GreenGlow), and /api/gate/code lets only the developer into code-server, for
+// the proxy in front of them all (see compose.yaml).
 
 using System.Collections.Concurrent;
 using System.Net;
@@ -56,7 +60,13 @@ public sealed class WebServer : IAsyncDisposable
 
     public int Port { get; private set; }
 
-    public static async Task<WebServer> StartAsync(int port, Action<string> log, IPAddress bind, Users users, Machine machine)
+    /// <summary>Where the apps beside Sim i are, on the same site: code-server and the terminal (GreenGlow). Null: not there.</summary>
+    public sealed record Links(string? Code, string? Terminal);
+
+    private Users _users = null!;
+    private Links _links = new(null, null);
+
+    public static async Task<WebServer> StartAsync(int port, Action<string> log, IPAddress bind, Users users, Machine machine, Links? links = null)
     {
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
@@ -67,7 +77,7 @@ public sealed class WebServer : IAsyncDisposable
         });
         builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = MaxUpload);
         var app = builder.Build();
-        var server = new WebServer(app);
+        var server = new WebServer(app) { _users = users, _links = links ?? new(null, null) };
         server.Map(log, users, machine);
         await app.StartAsync();
         server.Port = new Uri(app.Urls.First()).Port;
@@ -89,13 +99,25 @@ public sealed class WebServer : IAsyncDisposable
         return session.User;
     }
 
-    /// <summary>The handler, run only for a signed-on user, and (for a change) only with the guard header.</summary>
+    /// <summary>
+    /// The handler, run only for a signed-on user who may use these pages (see <see cref="Users.IsAdmin"/>), and (for a
+    /// change) only with the guard header.
+    /// </summary>
     private Func<HttpContext, Task> Authorized(Func<HttpContext, string, Task> handler, bool changes = false) => async context =>
     {
         if (SignedOn(context) is not { } user)
         {
             context.Response.StatusCode = 401;
             await context.Response.WriteAsJsonAsync(new { message = "Sign on first." });
+            return;
+        }
+        // Checked at each request: a profile taken out of the group, disabled or deleted loses its session.
+        if (!_users.IsAdmin(user))
+        {
+            if (context.Request.Cookies[Cookie] is { } token) _sessions.TryRemove(token, out _);
+            context.Response.Cookies.Delete(Cookie);
+            context.Response.StatusCode = 403;
+            await context.Response.WriteAsJsonAsync(NotAdmin(user));
             return;
         }
         if (changes && context.Request.Headers[Guard] != "1")
@@ -106,6 +128,19 @@ public sealed class WebServer : IAsyncDisposable
         }
         await handler(context, user);
     };
+
+    /// <summary>What a user who isn't an administrator is told, and where they're sent: the terminal, when there is one.</summary>
+    private object NotAdmin(string user) => new
+    {
+        message = _links.Terminal is null
+            ? $"{user} can't use the web interface: it's for the {_users.AdminGroup} group's members."
+            : $"{user} uses the terminal: the web interface is for the {_users.AdminGroup} group's members.",
+        redirect = _links.Terminal,
+    };
+
+    /// <summary>A path on this site to go back to after signing on: one that starts with a single /, or null.</summary>
+    internal static string? LocalPath(string? path) =>
+        path is { Length: > 0 } && path[0] == '/' && (path.Length == 1 || path[1] is not ('/' or '\\')) && !path.Any(char.IsControl) ? path : null;
 
     // ---- the API ----
 
@@ -153,6 +188,14 @@ public sealed class WebServer : IAsyncDisposable
                 });
                 return;
             }
+            if (!users.IsAdmin(profile.User))
+            {
+                // No session: these pages aren't theirs. The page sends them to the terminal, which they sign on to.
+                log($"web: sign-on by {profile.User}, who isn't in {users.AdminGroup}: sent to {_links.Terminal ?? "nowhere"}");
+                context.Response.StatusCode = 403;
+                await context.Response.WriteAsJsonAsync(NotAdmin(profile.User));
+                return;
+            }
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
             _sessions[token] = (profile.User, DateTime.UtcNow.AddHours(8));
             context.Response.Cookies.Append(Cookie, token, new CookieOptions
@@ -174,7 +217,37 @@ public sealed class WebServer : IAsyncDisposable
         }, changes: true));
 
         _app.MapGet("/api/me", Authorized((context, user) =>
-            context.Response.WriteAsJsonAsync(new { user, library = machine.DefaultLibrary(user), libraries = machine.Store.Libraries(machine.DefaultLibrary(user)) })));
+            context.Response.WriteAsJsonAsync(new
+            {
+                user, library = machine.DefaultLibrary(user), libraries = machine.Store.Libraries(machine.DefaultLibrary(user)),
+                // code-server only for the developer.
+                links = new { code = users.IsDeveloper(user) ? _links.Code : null, terminal = _links.Terminal },
+            })));
+
+        // The proxy asks this before each request to code-server (Caddy's forward_auth, with the browser's cookie): yes
+        // (204) for the developer; to the sign-on page, and back, for anyone not signed on; no (403) for anyone else.
+        _app.MapGet("/api/gate/code", async context =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var user = SignedOn(context);
+            if (user is not null && users.IsDeveloper(user))
+            {
+                context.Response.StatusCode = 204;
+                return;
+            }
+            if (user is null)
+            {
+                var back = LocalPath(context.Request.Headers["X-Forwarded-Uri"].ToString()) ?? _links.Code ?? "/";
+                context.Response.Redirect("/?next=" + Uri.EscapeDataString(back));
+                return;
+            }
+            log($"web: {user} was refused code-server: it's the developer's ({users.Developer ?? "none"})");
+            context.Response.StatusCode = 403;
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            await context.Response.WriteAsync(users.Developer is null
+                ? "code-server isn't for anyone: no developer is set (SIM_I_DEVELOPER_USER)."
+                : $"code-server is only for {users.Developer}.");
+        });
 
         _app.MapGet("/api/members", Authorized((context, _) =>
             context.Response.WriteAsJsonAsync(machine.Store.Members().Select(m =>

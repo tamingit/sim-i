@@ -10,7 +10,7 @@ public class WebServerTests
     private static async Task<(Machine Machine, WebServer Server, HttpClient Client)> Started()
     {
         var machine = Machine.Open();
-        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        var users = Users.Open(machine.Store, TestUsers.Settings());
         var server = await WebServer.StartAsync(0, _ => { }, IPAddress.Loopback, users, machine);
         var client = new HttpClient(new HttpClientHandler { CookieContainer = new CookieContainer() })
         {

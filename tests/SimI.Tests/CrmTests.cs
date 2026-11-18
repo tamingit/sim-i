@@ -126,7 +126,7 @@ public class CrmScreenTests
 
     /// <summary>A Telnet server on the machine, signing users on against its users table.</summary>
     internal static Task<TelnetServer> StartAsync(Machine machine) =>
-        TelnetServer.StartAsync(machine: machine, users: Users.Open(machine.Store, new Dictionary<string, string>()));
+        TelnetServer.StartAsync(machine: machine, users: Users.Open(machine.Store, TestUsers.Settings()));
 
     internal static async Task<TestClient> SignOnAsync(TelnetServer host, string user)
     {

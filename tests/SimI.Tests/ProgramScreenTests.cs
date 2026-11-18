@@ -607,7 +607,7 @@ public class ProgramScreenTests
         Assert.Equal(["QGPL/QDDSSRC(USRMNTD)", "QGPL/QRPGLESRC(USRMNT)"], installed.Select(m => m.ToString()));
         Assert.All(installed, m => Assert.DoesNotContain(machine.Store.Diagnostics(m), d => d.Severity != Severity.Info));
         Assert.Empty(machine.InstallSystemSource());
-        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        var users = Users.Open(machine.Store, TestUsers.Settings());
         await using var host = await TelnetServer.StartAsync(users: users, machine: machine);
         await using var client = await SignOnAsync(host);
         // System Options on the main menu, then option 1.
@@ -668,7 +668,7 @@ public class ProgramScreenTests
     {
         using var machine = Machine.Open();
         machine.InstallSystemSource();
-        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        var users = Users.Open(machine.Store, TestUsers.Settings());
         await using var host = await TelnetServer.StartAsync(users: users, machine: machine);
         await using var client = await SignOnAsync(host);
         await CommandAsync(client, "wrkusrprf");

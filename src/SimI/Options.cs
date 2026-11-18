@@ -35,7 +35,7 @@ public sealed record Options(
         "SIM_I_MAPPER_PORT", "SIM_I_TLS_PORT", "SIM_I_PRINT_TLS_PORT", "SIM_I_SIGNON_TLS_PORT",
         "SIM_I_COMMAND_TLS_PORT", "SIM_I_TLS_CERT", "SIM_I_TLS_NAMES", "SIM_I_SOURCE_DIR", "SIM_I_DATABASE",
         "SIM_I_WEB_PORT", "SIM_I_IFS_DIR", "SIM_I_REMOTE_USER", "SIM_I_REMOTE_PASSWORD", "SIM_I_DEBUG_PORT",
-        "SIM_I_FILE_PORT", "SIM_I_FILE_TLS_PORT",
+        "SIM_I_FILE_PORT", "SIM_I_FILE_TLS_PORT", "SIM_I_CODE_URL", "SIM_I_TERMINAL_URL",
     ];
 
     /// <summary>The file --env-file names, which has to be known before the settings in it can be read.</summary>

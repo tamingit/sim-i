@@ -27,7 +27,7 @@ public class GroupProfileTests
     public void AGroupProfileIsMadeAndItsMembersSignOnAsThemselves()
     {
         using var machine = Machine.Open();
-        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        var users = Users.Open(machine.Store, TestUsers.Settings());
 
         Ok(machine, "CRTUSRPRF USRPRF(GGADMIN) PASSWORD(*NONE) TEXT('GreenGlow administrators')");
         Ok(machine, "CRTUSRPRF USRPRF(STAFF) PASSWORD(*NONE)");
@@ -57,7 +57,7 @@ public class GroupProfileTests
     public void TheIbmIsRulesForGroupProfilesHold()
     {
         using var machine = Machine.Open();
-        Users.Open(machine.Store, new Dictionary<string, string>());
+        Users.Open(machine.Store, TestUsers.Settings());
         Ok(machine, "CRTUSRPRF USRPRF(GGADMIN) PASSWORD(*NONE)");
         Ok(machine, "CRTUSRPRF USRPRF(JSMITH) PASSWORD(Pass1234) GRPPRF(GGADMIN)");
 
@@ -87,7 +87,7 @@ public class GroupProfileTests
     public void ChangingAProfileKeepsWhatTheCommandDoesntName()
     {
         using var machine = Machine.Open();
-        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        var users = Users.Open(machine.Store, TestUsers.Settings());
         Ok(machine, "CRTUSRPRF USRPRF(GGADMIN) PASSWORD(*NONE)");
         Ok(machine, "CRTUSRPRF USRPRF(JSMITH) PASSWORD(Pass1234) GRPPRF(GGADMIN) SPCAUT(*SECADM)");
 
@@ -107,12 +107,12 @@ public class GroupProfileTests
     public void TheSettingsUsersKeepTheirGroupsAcrossAStart()
     {
         using var machine = Machine.Open();
-        Users.Open(machine.Store, new Dictionary<string, string>());
+        Users.Open(machine.Store, TestUsers.Settings());
         Ok(machine, "CRTUSRPRF USRPRF(GGADMIN) PASSWORD(*NONE)");
         Ok(machine, "CHGUSRPRF USRPRF(PRTUSER) GRPPRF(GGADMIN) SPCAUT(*SECADM)");
 
         // At each start the settings' three users are written again: their groups are kept.
-        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        var users = Users.Open(machine.Store, TestUsers.Settings());
         Assert.Equal("GGADMIN", users.Main.GroupProfile);
         Assert.Equal(["*SECADM"], users.Main.SpecialAuthorities);
     }

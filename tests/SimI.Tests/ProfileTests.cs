@@ -160,7 +160,7 @@ public class ProfileTests
     {
         var machine = Machine.Open();
         using var _ = machine;
-        var users = Users.Open(machine.Store, new Dictionary<string, string>());
+        var users = Users.Open(machine.Store, TestUsers.Settings());
         await using var server = await WebServer.StartAsync(0, _ => { }, IPAddress.Loopback, users, machine);
         using var client = new HttpClient(new HttpClientHandler { CookieContainer = new CookieContainer() })
         {

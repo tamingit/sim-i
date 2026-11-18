@@ -127,7 +127,11 @@ public sealed class Users
         "SIM_I_USER", "SIM_I_PASSWORD",
         "SIM_I_EXPIRED_USER", "SIM_I_EXPIRED_PASSWORD",
         "SIM_I_LOCKED_USER", "SIM_I_LOCKED_PASSWORD",
+        "SIM_I_DEVELOPER_USER", "SIM_I_DEVELOPER_PASSWORD", "SIM_I_ADMIN_GROUP",
     ];
+
+    /// <summary>The administrators' group profile when the settings don't name one.</summary>
+    public const string DefaultAdminGroup = "SIMADMIN";
 
     private static readonly Regex UserName = new("^[A-Z#$@][A-Z0-9#$@_]{0,9}$");
 
@@ -154,6 +158,29 @@ public sealed class Users
         _main = main;
     }
 
+    /// <summary>
+    /// The developer the settings name (SIM_I_DEVELOPER_USER), or null for none: the only user who may use code-server.
+    /// </summary>
+    public string? Developer { get; private init; }
+
+    /// <summary>
+    /// The administrators' group profile (SIM_I_ADMIN_GROUP), made when there's a developer, or null when there isn't.
+    /// Its members use the web interface; with no group, every user does.
+    /// </summary>
+    public string? AdminGroup { get; private init; }
+
+    /// <summary>
+    /// Whether this user may use the web interface's pages: a member of the administrators' group (its group profile,
+    /// or one of its supplemental groups), or anyone when there's no such group. A disabled or removed profile may not.
+    /// </summary>
+    public bool IsAdmin(string user) =>
+        Find(user) is { Disabled: false } profile
+        && (AdminGroup is null || profile.GroupProfile == AdminGroup || profile.SupplementalGroups.Contains(AdminGroup));
+
+    /// <summary>Whether this user is the developer (and still enabled), who may use code-server.</summary>
+    public bool IsDeveloper(string user) =>
+        Developer is { } developer && user.Trim().ToUpperInvariant() == developer && Find(developer) is { Disabled: false };
+
     /// <summary>The user that signs on normally. For users in the database, it's the one the settings name, as the database has it now.</summary>
     public UserProfile Main => _store is null ? _main : Find(_main.User) ?? _main;
 
@@ -162,14 +189,18 @@ public sealed class Users
 
     /// <summary>
     /// The users, kept in the database's table QSIM_USER, where the user maintenance program (or any SQL)
-    /// can add, change and remove them. The three the settings name are put in the table at each start,
-    /// as the settings give them; every other user in it is kept as it is.
+    /// can add, change and remove them. The users the settings name are put in the table at each start,
+    /// as the settings give them; every other user in it is kept as it is. The test user that signs on normally
+    /// (PRTUSER) is put there only when the settings name it (SIM_I_USER), so that no user with a well-known
+    /// password is made unasked; the expired and disabled users, which can't sign on, always are.
     /// </summary>
     public static Users Open(Store store, IReadOnlyDictionary<string, string> settings)
     {
         var defaults = FromSettings(settings);
+        var testUserListed = settings.TryGetValue("SIM_I_USER", out var listed) && !string.IsNullOrWhiteSpace(listed);
         foreach (var profile in defaults._fixed)
         {
+            if (profile == defaults._main && !testUserListed) continue;
             var text = profile == defaults._main ? "Signs on normally" : profile.Disabled ? "Disabled" : "Password expired";
             var existing = store.FindUser(profile.User);
             // Its name, password and flags come from the settings; the rest is kept as the table has it.
@@ -178,7 +209,44 @@ public sealed class Users
                 existing?.DefaultLibrary ?? Store.Current, existing?.GroupProfile ?? "*NONE", existing?.SupplementalGroups ?? "",
                 existing?.SpecialAuthorities ?? "*NONE"));
         }
-        return new Users(store, defaults._main);
+        var (developer, adminGroup) = DeveloperFrom(settings, defaults);
+        if (developer is not null && adminGroup is not null)
+        {
+            // The administrators' group: no password, so nobody signs on as it, and every special authority. As on an
+            // IBM i, a group profile has no group of its own.
+            var group = store.FindUser(adminGroup);
+            store.SaveUser(new UserRow(adminGroup, NoPassword, "*ENABLED", "*NO", group?.Text is { Length: > 0 } groupText ? groupText : "Sim i administrators",
+                group?.DefaultLibrary ?? Store.Current, "*NONE", "", string.Join(' ', SpecialAuthorityNames)));
+            // The developer: its name and password from the settings, the administrators' group as its group profile, and
+            // the rest kept as the table has it (a supplemental group can't be its group profile too).
+            var existing = store.FindUser(developer.User);
+            store.SaveUser(new UserRow(developer.User, developer.Password, "*ENABLED", "*NO",
+                existing?.Text is { Length: > 0 } kept ? kept : "Developer", existing?.DefaultLibrary ?? Store.Current, adminGroup,
+                string.Join(' ', Names(existing?.SupplementalGroups ?? "").Where(g => g != adminGroup)), existing?.SpecialAuthorities ?? "*NONE"));
+        }
+        return new Users(store, defaults._main) { Developer = developer?.User, AdminGroup = adminGroup };
+    }
+
+    /// <summary>
+    /// The developer (SIM_I_DEVELOPER_USER and SIM_I_DEVELOPER_PASSWORD) and the administrators' group it's put in
+    /// (SIM_I_ADMIN_GROUP, SIMADMIN unless set), or nulls when no developer is named.
+    /// </summary>
+    private static (UserProfile? Developer, string? AdminGroup) DeveloperFrom(IReadOnlyDictionary<string, string> settings, Users defaults)
+    {
+        string? Get(string name) => settings.TryGetValue(name, out var value) && !string.IsNullOrWhiteSpace(value) ? value.Trim() : null;
+        if (Get("SIM_I_DEVELOPER_USER")?.ToUpperInvariant() is not { } name) return (null, null);
+        if (!UserName.IsMatch(name)) throw new ArgumentException($"SIM_I_DEVELOPER_USER {name} is not an IBM i user name");
+        var password = Get("SIM_I_DEVELOPER_PASSWORD") ?? throw new ArgumentException($"SIM_I_DEVELOPER_PASSWORD is needed for the developer {name}");
+        if (password == NoPassword) throw new ArgumentException("SIM_I_DEVELOPER_PASSWORD can't be *NONE: the developer signs on");
+        var group = Get("SIM_I_ADMIN_GROUP")?.ToUpperInvariant() ?? DefaultAdminGroup;
+        if (!UserName.IsMatch(group)) throw new ArgumentException($"SIM_I_ADMIN_GROUP {group} is not an IBM i user name");
+        if (group == name) throw new ArgumentException($"SIM_I_ADMIN_GROUP {group} can't be the developer too");
+        foreach (var other in defaults._fixed)
+        {
+            if (other.User == name) throw new ArgumentException($"SIM_I_DEVELOPER_USER {name} is already one of the other users the settings name");
+            if (other.User == group) throw new ArgumentException($"SIM_I_ADMIN_GROUP {group} is already one of the users the settings name");
+        }
+        return (new UserProfile(name, password), group);
     }
 
     private UserProfile Profile(UserRow row) =>

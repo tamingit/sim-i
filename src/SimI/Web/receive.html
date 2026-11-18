@@ -113,6 +113,8 @@
     <h1>Receive a library from an IBM i</h1>
     <a href="/">Source editor</a>
     <a href="/profile">Profiles</a>
+    <a id="codeLink" class="hidden" href="#" title="VS Code in the browser, on /source">Code</a>
+    <a id="terminalLink" class="hidden" href="#" title="5250 sessions in the browser (GreenGlow)">Terminal</a>
     <span class="who" id="who"></span>
   </header>
   <main>
@@ -207,6 +209,7 @@ async function api(method, url, body) {
   if (response.status === 401 && url !== "/api/signon") { showSignon(); throw new Error("Sign on again."); }
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
+  if (response.status === 403 && data && data.redirect) { location.href = data.redirect; throw new Error(data.message); }
   if (!response.ok) throw new Error((data && data.message) || response.statusText);
   return data;
 }
@@ -232,6 +235,14 @@ function bytes(n) {
 const count = n => Number(n).toLocaleString("en-US");
 const key = o => o.name + " " + o.type;
 
+// code-server (the developer's only) and the terminal, when they're on this site.
+function showLinks(links) {
+  for (const [id, href] of [["codeLink", links && links.code], ["terminalLink", links && links.terminal]]) {
+    if (href) $(id).href = href;
+    $(id).classList.toggle("hidden", !href);
+  }
+}
+
 function showSignon() { $("app").classList.add("hidden"); $("signon").classList.remove("hidden"); $("user").focus(); }
 
 $("signonForm").addEventListener("submit", async e => {
@@ -250,6 +261,7 @@ async function start() {
   $("signon").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("who").textContent = me.user;
+  showLinks(me.links);
   if (remote.user) {
     $("rmtUser").placeholder = remote.user;
     if (remote.hasPassword) $("rmtPassword").placeholder = "from the settings";

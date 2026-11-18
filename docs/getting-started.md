@@ -34,18 +34,15 @@ Your repository may keep this layout at its root or in a subfolder. Either way, 
 
 ### Point Sim i at it
 
-`compose.yaml` has the source volume and `SIM_I_SOURCE_DIR` commented out. Rather than editing it, put the change in a `compose.override.yaml` beside it. Compose reads that file by itself:
+Put a `.env` beside `compose.yaml` naming the folder, and the user to sign on with. Compose reads it by itself:
 
-```yaml
-services:
-  sim-i:
-    environment:
-      SIM_I_SOURCE_DIR: /source
-    volumes:
-      - /home/you/work/erp-repo/source:/source:ro
+```bash
+SIM_I_SOURCE=/home/you/work/erp-repo/source
+SIM_I_USER=PRTUSER
+SIM_I_PASSWORD=Secret12
 ```
 
-The left side of the volume is the path on your machine; it can be any folder. The container runs as a non-root user, so the files must be readable by everyone (a normal checkout is).
+`SIM_I_SOURCE` is the path on your machine; it can be any folder. The container runs as a non-root user, so the files must be readable by everyone (a normal checkout is). Sim i makes the test user `PRTUSER` only when `SIM_I_USER` is set. For code-server, set a developer as well (see the README's "One web address").
 
 ### Start it
 
@@ -58,7 +55,7 @@ The first run builds the image and starts PostgreSQL, where Sim i keeps everythi
 At start-up Sim i does this, in order:
 
 1. Opens the database and lists its libraries.
-2. Puts the three users from `.env.example` in the user table (`PRTUSER` / `Secret12` is the one to sign on with).
+2. Puts the users from `.env` in the user table (`PRTUSER` / `Secret12`, as set above, is the one to sign on with).
 3. Reads the source folder. A library folder that isn't a library yet makes one. Each member that is new or has changed since the last start is saved, checked and created: copy members first, then SQL scripts, then display and printer files, then RPG programs, then CL programs. A member that hasn't changed and is already made is skipped, so a restart is quick.
 4. Starts the servers: 5250 on 2323, the host servers on IBM's ports, the web editor on 8080 and the debug server on 4711.
 

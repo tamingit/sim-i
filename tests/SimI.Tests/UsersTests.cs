@@ -136,10 +136,28 @@ public class UsersTests
     }
 
     [Fact]
+    public void TheTestUserIsMadeOnlyWhenTheSettingsNameIt()
+    {
+        using var store = Store.Open();
+        var users = Users.Open(store, new Dictionary<string, string> { ["SIM_I_PASSWORD"] = "NotUsed1" });
+        // No SIM_I_USER: no PRTUSER, with its well-known password; the users that can't sign on are made as before.
+        Assert.Equal(["EXPUSER (password expired)", "LOCKUSER (disabled)"], users.All.Select(u => u.ToString()));
+        Assert.Null(users.Find(Users.DefaultUser));
+        Assert.Equal(SignOnResult.UnknownUser, users.Check(Users.DefaultUser, Users.DefaultPassword).Result);
+
+        // Named, it's made, with the default password when the settings give none.
+        users = Users.Open(store, new Dictionary<string, string> { ["SIM_I_USER"] = Users.DefaultUser });
+        Assert.Equal(SignOnResult.SignedOn, users.Check(Users.DefaultUser, Users.DefaultPassword).Result);
+        // A blank SIM_I_USER, as compose passes one that .env leaves out, is no SIM_I_USER.
+        using var other = Store.Open();
+        Assert.Null(Users.Open(other, new Dictionary<string, string> { ["SIM_I_USER"] = " " }).Find(Users.DefaultUser));
+    }
+
+    [Fact]
     public void UsersInTheDatabaseKeepWhatChangesThemAndOtherUsersSurviveAStart()
     {
         using var store = Store.Open();
-        var users = Users.Open(store, new Dictionary<string, string>());
+        var users = Users.Open(store, TestUsers.Settings());
         Assert.Equal(["EXPUSER (password expired)", "LOCKUSER (disabled)", "PRTUSER"], users.All.Select(u => u.ToString()));
 
         // A password changed through a server is kept; so is a user added with SQL.
@@ -156,7 +174,7 @@ public class UsersTests
         store.SaveUser(store.FindUser("PRTUSER")! with { DefaultLibrary = "SALES" });
 
         // The next start sets the three the settings name again, and leaves the rest.
-        users = Users.Open(store, new Dictionary<string, string> { ["SIM_I_PASSWORD"] = "Changed1" });
+        users = Users.Open(store, new Dictionary<string, string> { ["SIM_I_USER"] = Users.DefaultUser, ["SIM_I_PASSWORD"] = "Changed1" });
         Assert.Equal(SignOnResult.PasswordExpired, users.Check("EXPUSER", "Expired1").Result);
         Assert.Equal(SignOnResult.SignedOn, users.Check("PRTUSER", "Changed1").Result);
         Assert.Equal(SignOnResult.SignedOn, users.Check("EXTRA", "Extra123").Result);

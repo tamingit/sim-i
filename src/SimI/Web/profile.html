@@ -73,6 +73,8 @@
 <header>
   <h1>Program profiles</h1>
   <a href="/">Source editor</a>
+  <a id="codeLink" class="hidden" href="#" title="VS Code in the browser, on /source">Code</a>
+  <a id="terminalLink" class="hidden" href="#" title="5250 sessions in the browser (GreenGlow)">Terminal</a>
 </header>
 <main>
   <aside>
@@ -120,6 +122,11 @@ let zoom = [];       // the path of nodes from the root to the one shown full wi
 async function get(url) {
   const response = await fetch(url, { headers: { "X-Sim-i": "1" } });
   if (response.status === 401) { $("signedOff").classList.remove("hidden"); throw new Error("signed off"); }
+  if (response.status === 403) {
+    const data = await response.json().catch(() => null);
+    if (data && data.redirect) location.href = data.redirect;
+    throw new Error(data?.message ?? "not allowed");
+  }
   if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? `${url} failed (${response.status})`);
   return response.json();
 }
@@ -127,6 +134,15 @@ async function get(url) {
 const ms = (n) => n >= 1000 ? `${(n / 1000).toFixed(2)} s` : n >= 10 ? `${n.toFixed(0)} ms` : `${n.toFixed(2)} ms`;
 const label = (n) => n.kind === "line" ? `line ${n.name}` : n.name;
 const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+// code-server (the developer's only) and the terminal, when they're on this site.
+function showLinks(links) {
+  for (const [id, href] of [["codeLink", links && links.code], ["terminalLink", links && links.terminal]]) {
+    if (href) $(id).href = href;
+    $(id).classList.toggle("hidden", !href);
+  }
+}
+get("/api/me").then(me => showLinks(me.links)).catch(() => {});
 
 async function loadRuns() {
   const runs = await get("/api/profiles");

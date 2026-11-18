@@ -16,5 +16,8 @@ TestResults/
 .env.*
 !.env.example
 
+# The source folder compose.yaml mounts unless SIM_I_SOURCE names another
+/source/
+
 # The libraries' SQLite databases (SIM_I_DATABASE_DIR in .env.example)
 /data/

@@ -118,6 +118,8 @@
     <h1>Sim i source</h1>
     <a href="/receive" title="Receive a library from a real IBM i">Receive from an IBM i</a>
     <a href="/profile" title="Where recent program calls spent their time">Profiles</a>
+    <a id="codeLink" class="hidden" href="#" title="VS Code in the browser, on /source">Code</a>
+    <a id="terminalLink" class="hidden" href="#" title="5250 sessions in the browser (GreenGlow)">Terminal</a>
     <span class="who" id="who"></span>
     <button id="signoff">Sign off</button>
   </header>
@@ -184,6 +186,7 @@ async function api(method, url, body, isForm) {
   if (response.status === 401 && url !== "/api/signon") { showSignon(); throw new Error("Sign on again."); }
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
+  if (response.status === 403 && data && data.redirect) { location.href = data.redirect; throw new Error(data.message); }
   if (!response.ok) throw new Error((data && data.message) || response.statusText);
   return data;
 }
@@ -199,10 +202,26 @@ function el(tag, attrs, ...children) {
   return node;
 }
 
+// code-server (the developer's only) and the terminal, when they're on this site.
+function showLinks(links) {
+  for (const [id, href] of [["codeLink", links && links.code], ["terminalLink", links && links.terminal]]) {
+    if (href) $(id).href = href;
+    $(id).classList.toggle("hidden", !href);
+  }
+}
+
+// Where to go after signing on: ?next=, when it's a path on this site (as the code-server gate sends).
+function nextPath() {
+  const next = new URLSearchParams(location.search).get("next");
+  return next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : null;
+}
+
 function showSignon() { $("app").classList.add("hidden"); $("signon").classList.remove("hidden"); $("user").focus(); }
 
 async function start(me) {
+  if (nextPath()) { location.href = nextPath(); return; }
   state.user = me.user;
+  showLinks(me.links);
   $("who").textContent = `${me.user} · ${me.library}`;
   $("signon").classList.add("hidden");
   $("app").classList.remove("hidden");

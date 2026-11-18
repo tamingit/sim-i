@@ -24,18 +24,20 @@ You need Docker with the compose plugin. Sim i runs in one container and Postgre
 
 No source yet? Use `examples/customers` from this repository.
 
-**2. Point Sim i at it.** Put a `compose.override.yaml` beside `compose.yaml` (compose reads it by itself, so `compose.yaml` stays as it is):
+**2. Point Sim i at it.** Put a `.env` beside `compose.yaml` naming the folder, who owns it, and a developer for yourself (see `.env.example`):
 
-```yaml
-services:
-  sim-i:
-    environment:
-      SIM_I_SOURCE_DIR: /source
-    volumes:
-      - /home/you/work/erp/source:/source:ro   # or ./examples/customers:/source:ro
+```bash
+SIM_I_SOURCE=/home/you/work/erp/source   # or ./examples/customers; ./source when it's left out
+SIM_I_UID=1000                           # id -u: code-server edits the folder as this user
+SIM_I_GID=1000                           # id -g
+SIM_I_DEVELOPER_USER=YOU
+SIM_I_DEVELOPER_PASSWORD=change-me
+GREENGLOW_BREAKGLASS_PASSWORD=change-me-too
+# SIM_I_USER=PRTUSER                     # the test user, made only when this is set
+# SIM_I_PASSWORD=change-me-three
 ```
 
-The left side is the path on your machine. The container runs as a non-root user, so the files must be readable by everyone (a normal checkout is).
+Sim i's container runs as a non-root user, so the files must be readable by everyone (a normal checkout is). Make the folder before the first start if it doesn't exist yet, so that it's yours rather than Docker's.
 
 **3. Start it.**
 
@@ -43,11 +45,12 @@ The left side is the path on your machine. The container runs as a non-root user
 docker compose up --build
 ```
 
-This builds the image, starts PostgreSQL 17, waits until it's ready, then starts Sim i, which makes a library for each library folder and saves, checks and creates each member. Members with errors are listed in the log and don't stop it.
+This builds the images, starts PostgreSQL 17, waits until it's ready, then starts Sim i, which makes a library for each library folder and saves, checks and creates each member. Members with errors are listed in the log and don't stop it. code-server, GreenGlow and the proxy in front of them start beside it (see [One web address](#one-address)).
 
 **4. Use it.**
 
-- **Web editor:** <http://localhost:8080/>, signing on as `PRTUSER` / `Secret12`.
+- **Web editor:** <http://localhost:8080/>, signing on as your developer.
+- **code-server:** <http://localhost:8080/code/>, VS Code on your source folder, for the developer only.
 - **5250:** any TN5250 client on `localhost` port 2323. With `examples/customers`, enter `CALL DEMOLIB/CUSTMNT`.
 - **VS Code:** the debug server is on port 4711 (the extension is in `vscode/sim-i`).
 
@@ -126,7 +129,7 @@ Sim i runs RPG IV, free-form and fixed-form, against PostgreSQL. It has librarie
 
 *RPG supported:* free-form and fixed-form RPG, alone or mixed, with the RPG cycle (a primary file read record by record, control breaks, total-time calculations, O specs printing heading, detail, total and exception lines). Native record I/O on database files (`CHAIN`, `SETLL`, `READE` and the rest) over physical and logical files made from DDS with `CRTPF` and `CRTLF`, and over SQL tables, views and indexes. Data structures are bytes laid out as on an IBM i, so `OVERLAY`, `MOVE` and pointers (`BASED`, `%ADDR`, `%ALLOC`) work. `EXTPROC` prototypes call the integrated file system's C APIs (`open`, `read`, `write`, `stat`, `opendir` ...) on the IFS folder, and `system`, `sleep`, `getenv`. Data areas, `/COPY` of stream files, `SRCSTMF`, `SORTA`, `EVAL-CORR`, `*INZSR`, `*PSSR`, `ON-EXIT`, `SND-MSG`, `DIM(*AUTO)`, compile-time arrays and about 100 built-in functions. Also the PSDS, `infds`, `usropn` files, service programs through `bnddir`, and `QCMDEXC`. A mainline repeats until `*INLR` is on or a `RETURN`, as on an IBM i. What's checked, what runs and what isn't supported is in [docs/rpg-support.md](docs/rpg-support.md).
 
-<a id="web"></a>*Web source editor:* with `--web-port 8080`, a page at http://localhost:8080 lists every member with a dot for its state, and edits and uploads source. Sign on with a user profile of Sim i. Save & compile (Ctrl+S) checks and compiles the member and lists what was found by line: errors (what an IBM i's compiler rejects, or a compile that failed) in red, and what Sim i can't run (and SQL on tables that aren't there) as warnings. Uploading files, or a folder laid out as `--source-dir` reads one (`LIBRARY/FILE/member.ext`), saves and compiles each in the order they depend on each other, and lists each file as error, warning or OK. Changes need the page's own header, so a page on another site can't make them.
+<a id="web"></a>*Web source editor:* with `--web-port 8080`, a page at http://localhost:8080 lists every member with a dot for its state, and edits and uploads source. Sign on with a user profile of Sim i: with a developer set, one in the administrators' group (see [One web address](#one-address)). Save & compile (Ctrl+S) checks and compiles the member and lists what was found by line: errors (what an IBM i's compiler rejects, or a compile that failed) in red, and what Sim i can't run (and SQL on tables that aren't there) as warnings. Uploading files, or a folder laid out as `--source-dir` reads one (`LIBRARY/FILE/member.ext`), saves and compiles each in the order they depend on each other, and lists each file as error, warning or OK. Changes need the page's own header, so a page on another site can't make them.
 
 <a id="profile"></a>*Profiles (flame graphs):* with `--web-port`, the **Profiles** page (`/profile`) shows where each of the last 30 program calls spent its time. Every top-level `CALL` (from a 5250 session, the remote command server or a debugger) is recorded: the programs it called, RPG procedures (a service program's with its name), subroutines and source lines, CL commands, and a bar for each SQL statement (its text as translated, with parameter markers, never values), database file operation (`CHAIN CUSTPF`), printer file and display operation (`EXFMT CUSTSCR`, which is time waiting for the user). Time is elapsed time, so waiting on PostgreSQL, the user or a breakpoint shows where it happened. Pick a run to see its flame graph: width is time, colour the kind of bar; hover for its time, its share of the run and how often it was entered, click to zoom in, and untick Source lines to merge each procedure's lines. Below it, the 20 things with the most time of their own. Download folded stacks gives the format [speedscope](https://www.speedscope.app) and `flamegraph.pl` read. Profiles are kept in memory only, and recording one makes a program run somewhat slower.
 
@@ -180,7 +183,7 @@ dotnet run --project src/SimI -- --source-dir examples/crm --print-port 8474
 
 <a id="users"></a>**Users**
 
-Every server checks sign-ons against the same users: the 5250 sign-on screen, the sign-on server, Network Print and the remote command server. They're kept in the database, in the table `QGPL.QSIM_USER` (`USERNAME`, `PASSWORD`, `STATUS` `*ENABLED` or `*DISABLED`, `PWDEXP` `*YES` or `*NO`, `TEXT`, `DFTLIB`, `GRPPRF`, `SUPGRPPRF`, `SPCAUT`), so there can be as many as you like. A password changed through any server holds for all of them. These three are there to begin with:
+Every server checks sign-ons against the same users: the 5250 sign-on screen, the sign-on server, Network Print and the remote command server. They're kept in the database, in the table `QGPL.QSIM_USER` (`USERNAME`, `PASSWORD`, `STATUS` `*ENABLED` or `*DISABLED`, `PWDEXP` `*YES` or `*NO`, `TEXT`, `DFTLIB`, `GRPPRF`, `SUPGRPPRF`, `SPCAUT`), so there can be as many as you like. A password changed through any server holds for all of them. These are made at start-up: `EXPUSER` and `LOCKUSER` always, and the test user `PRTUSER` only when `.env` sets `SIM_I_USER`, so that no profile with this well-known password exists unasked (one an earlier start made stays until `DLTUSRPRF PRTUSER`). Sim i says at start-up when no user can sign on.
 
 | User | Password | Signing on with the right password |
 |---|---|---|
@@ -191,7 +194,7 @@ Every server checks sign-ons against the same users: the 5250 sign-on screen, th
 - **Adding more:** option 5 on the main menu is **System Options**: 1 works with users, 2 with libraries, 3 with source members. Users runs Sim i's own user maintenance program, `USRMNT` (also `WRKUSRPRF`, or `CALL USRMNT`), which is RPG with a display file like any other and is put in `QGPL` at start-up unless it's there (so a copy you change is kept; delete it to get the original back). F6 creates a user, 2 changes one (a blank password keeps the old one), 4 deletes one and 5 lists a group profile's members. A change holds at the next sign-on. A copy still exactly as an earlier Sim i shipped it is replaced at start-up with the current one. Any SQL on `QSIM_USER` does the same. Passwords are kept as typed, so every server can check them: use placeholders.
 - **Group profiles:** as on an IBM i, a group profile is a user profile that others name as their group profile (`GRPPRF`) or one of up to 15 supplemental groups (`SUPGRPPRF`). Give it the password `*NONE` so that nobody signs on as it (the 5250 screen says the password isn't correct; the host servers answer `00030010`). The rules are an IBM i's: a group profile has no group profile of its own, supplemental groups need a group profile, and a group profile with members isn't deleted until they leave it. A profile also has special authorities (`SPCAUT`: `*ALLOBJ`, `*SECADM`, `*JOBCTL`, `*SPLCTL`, `*SAVSYS`, `*SERVICE`, `*AUDIT`, `*IOSYSCFG`). Sim i checks no authority with them; they're there for clients that ask, through `QSYRUSRI`. Make and change them with `USRMNT` or the [user profile commands](#cl).
 - **Default library:** each user has one (`DFTLIB`, `QGPL` to begin with, and it has to be a library that exists, as `QSIM_LIBRARY` lists them; if it's deleted, `QGPL` is used). It's where a program, display file or source member named without a library is looked for first, where the user's new source goes (the library on the new-member screen, and `STRSEU`), and where an SQL `CREATE TABLE` with no library makes its table. A table name with no library in other SQL still goes through the libraries in order, `QGPL` first.
-- **The three above:** their names and passwords come from `.env` and are put in the table at each start, as written there, so a change to one of them in the table lasts until the next start. Every other user is left alone.
+- **The users above:** their names and passwords come from `.env` and are put in the table at each start, as written there, so a change to one of them in the table lasts until the next start. Every other user is left alone.
 - **Setting them:** copy `.env.example` to `.env` and change the names and passwords. Sim i reads `.env` from the directory it starts in, or the file `--env-file` names. Variables set in the environment win over the file. For Docker, pass the file with `--env-file .env`, or leave that out to use the defaults.
 - **Values:** write them without quotes, as Docker keeps quotes as part of the value. A user name is up to 10 characters. A password can be up to 27 characters on the 5250 sign-on screen, and up to 128 for the host servers.
 - **Logs:** Sim i logs who signed on and why a sign-on was refused, but never a password.
@@ -208,6 +211,19 @@ As on an IBM i, TLS is a second port for the same server: Telnet on 992, sign-on
 ## Running it
 
 `docker compose up --build` runs Sim i with every server, the web editor on port 8080, and the PostgreSQL it keeps everything in (see `compose.yaml`, and the [Quickstart](#quickstart) for loading your source).
+
+<a id="one-address"></a>**One web address.** `compose.yaml` puts a proxy (Caddy) in front of three apps, so they share one address (port 8080, or `SIM_I_WEB_PUBLISHED_PORT`):
+
+- **`/`: Sim i's web interface.** With a developer in `.env` (`SIM_I_DEVELOPER_USER` and `SIM_I_DEVELOPER_PASSWORD`), Sim i puts it in the administrators' group at each start: a group profile (`SIMADMIN`, or `SIM_I_ADMIN_GROUP`) with `PASSWORD(*NONE)` and every special authority, made if it isn't there. Then only that group's members use the web interface (add one with `CHGUSRPRF USRPRF(ANA) GRPPRF(SIMADMIN)`, or as a supplemental group). Anyone else who signs on is sent to the terminal, and a member taken out of the group loses their session at their next request. Without a developer, everyone uses it, as before.
+- **`/code/`: code-server**, VS Code in the browser on the source folder, with Sim i's extension set up for the developer: saving compiles on Sim i, F5 debugs. Only the developer gets in. The proxy asks Sim i (`/api/gate/code`) before each request, from the sign-on cookie of Sim i's page, and anyone not signed on is sent there first and back again. It has no password of its own, so nothing else may reach it. git works on the folder when it's a repository: commits carry `SIM_I_GIT_NAME` and `SIM_I_GIT_EMAIL`, and SSH remotes use the private key `SIM_I_GIT_SSH_KEY` names (readable by `SIM_I_UID` only), trusting a server's host key the first time. Its user has the uid and gid `SIM_I_UID` and `SIM_I_GID` give, so the files it writes stay yours, and it has no sudo. After changing them, rebuild it and remove the `code-server-home` volume.
+- **`/terminal/`: GreenGlow Connect**, 5250 sessions in the browser. It signs people on with Sim i's users, and the administrators' group's members are its administrators. It needs a GreenGlow image (`GREENGLOW_TAG`) that serves under `/terminal/` and signs on with IBM i users, and `GREENGLOW_BREAKGLASS_PASSWORD` for its first start.
+
+The other ports (5250, the host servers, the debug server and PostgreSQL's 5432) are published on `SIM_I_HOST` as before. code-server and GreenGlow aren't published at all. Each app is on a Docker network of its own with Sim i and the proxy:
+
+- code-server can't reach PostgreSQL or GreenGlow, but can reach the internet, for git.
+- GreenGlow's network is internal, so it reaches nothing but Sim i.
+
+Change the networks in `compose.yaml` when an app needs more. For HTTPS, set `SIM_I_SITE` to the host name and publish 80 and 443 for the proxy (see `compose.yaml`).
 
 New here? [docs/getting-started.md](docs/getting-started.md) walks through loading your source, copying data from a real IBM i, and debugging in VS Code.
 

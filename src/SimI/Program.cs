@@ -12,7 +12,7 @@
 //     --tls-cert names a PKCS #12 file for them, made (with a .crt to trust) when it's missing;
 //     without it, a certificate is made for this run only. --tls-name adds names to one it makes.
 // --env-file reads settings from a file (default: .env, when there is one); the environment wins.
-//     SIM_I_USER / SIM_I_PASSWORD set the user every server signs on, and
+//     SIM_I_USER / SIM_I_PASSWORD set the test user every server signs on (made only when SIM_I_USER is set), and
 //     SIM_I_EXPIRED_USER / _PASSWORD and SIM_I_LOCKED_USER / _PASSWORD the user whose
 //     password has expired and the disabled one. See .env.example.
 // --database is the PostgreSQL database's connection string (or SIM_I_DATABASE): each library is a schema of it,
@@ -27,6 +27,9 @@
 // --ifs-dir names the folder that is the integrated file system's root (default: a temporary one).
 // --bind listens on another address than loopback (0.0.0.0: every interface).
 // --trace logs each Telnet negotiation step, and each record's length (never its contents).
+// SIM_I_DEVELOPER_USER / _PASSWORD name the developer, put in the administrators' group SIM_I_ADMIN_GROUP (SIMADMIN):
+//     then only that group's members use the web interface, and only the developer code-server. SIM_I_CODE_URL and
+//     SIM_I_TERMINAL_URL are where code-server and GreenGlow are on the same site (/code/, /terminal/), for its links.
 
 using SimI;
 
@@ -69,11 +72,19 @@ try
     // A user's home directory, /home/USER, is made in the IFS the first time they sign on.
     machine.Ifs.MakeHomesFor(users, Log);
     Console.WriteLine($"users{(envFile is null ? "" : $" (settings from {envFile})")}: {string.Join(", ", users.All)}");
+    if (!users.All.Any(u => !u.Disabled && !u.HasNoPassword && !u.PasswordExpired))
+        Console.WriteLine("no user can sign on: set SIM_I_DEVELOPER_USER, or SIM_I_USER for the test user, in the settings (see .env.example)");
+    if (users.Developer is { } developer)
+        Console.WriteLine($"developer: {developer}, in the administrators' group {users.AdminGroup}: only its members use the web interface");
     if (options.SourceDir is not null) machine.Import(options.SourceDir, Log);
     var certificate = options.AnyTls
         ? Tls.LoadOrCreate(options.TlsCert, Tls.Names(options.Bind, options.ExtraTlsNames), Log)
         : null;
     TlsOptions? TlsOn(int? port) => port is { } p ? new TlsOptions(p, certificate!) : null;
+    // A link to an app beside Sim i on the same site: a path such as /code/, or nothing.
+    string? WebLink(string name) => settings.GetValueOrDefault(name) is { Length: > 0 } value
+        ? WebServer.LocalPath(value.Trim()) ?? throw new ArgumentException($"{name} {value} isn't a path on this site, such as /code/")
+        : null;
 
     await using var host = await TelnetServer.StartAsync(options.Port, Log, options.Bind, options.Trace, TlsOn(options.TlsPort), users, machine);
     Console.WriteLine($"Sim i listening on {options.Bind} port {host.Port}{TlsText(host.TlsPort)}; Ctrl+C to stop");
@@ -98,7 +109,8 @@ try
     if (files is not null) Console.WriteLine($"Sim i file server listening on port {files.Port}{TlsText(files.TlsPort)}");
 
     await using var web = options.WebPort is { } webPort
-        ? await WebServer.StartAsync(webPort, Log, options.Bind, users, machine)
+        ? await WebServer.StartAsync(webPort, Log, options.Bind, users, machine,
+            new WebServer.Links(WebLink("SIM_I_CODE_URL"), WebLink("SIM_I_TERMINAL_URL")))
         : null;
     if (web is not null) Console.WriteLine($"Sim i web source editor listening on port {web.Port}: http://{(options.Bind.Equals(System.Net.IPAddress.Any) ? "localhost" : options.Bind.ToString())}:{web.Port}/");
 

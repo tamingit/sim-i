@@ -143,7 +143,7 @@ public class LibraryTests
         var admin = new BatchJob("PRTUSER", CancellationToken.None);
         machine.Run("CRTLIB LIB(ONE)", admin);
         machine.Run("CRTLIB LIB(TWO)", admin);
-        Users.Open(machine.Store, new Dictionary<string, string>());
+        Users.Open(machine.Store, TestUsers.Settings());
         machine.Store.SaveUser(new UserRow("BOB", "Bobpass1", "*ENABLED", "*NO", "", "TWO"));
         machine.Store.SaveUser(new UserRow("GONE", "Gonepass", "*ENABLED", "*NO", "", "NOLIB"));
         foreach (var library in new[] { "ONE", "TWO" })
