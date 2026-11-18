@@ -41,8 +41,14 @@ public sealed record Member(string Library, string File, string Name, string Typ
 /// <summary>A spooled file a program printed: its lines, as text.</summary>
 public sealed record SpoolRecord(long Id, string Name, string User, int Pages, int Width, DateTime Created, string Text);
 
-/// <summary>One user profile as the table QSIM_USER keeps it. Status is *ENABLED or *DISABLED, PasswordExpired *YES or *NO; DefaultLibrary (DFTLIB) is the library the user's names are looked for in first, and new source goes to.</summary>
-public sealed record UserRow(string User, string Password, string Status, string PasswordExpired, string Text, string DefaultLibrary = "QGPL");
+/// <summary>
+/// One user profile as the table QSIM_USER keeps it. Status is *ENABLED or *DISABLED, PasswordExpired *YES or *NO; DefaultLibrary (DFTLIB) is
+/// the library the user's names are looked for in first, and new source goes to. GroupProfile (GRPPRF) is a user profile or *NONE;
+/// SupplementalGroups (SUPGRPPRF) up to 15 more, separated by blanks; SpecialAuthorities (SPCAUT) such as *SECADM, separated by blanks,
+/// or *NONE. A password of *NONE can't sign on, as a group profile's usually can't.
+/// </summary>
+public sealed record UserRow(string User, string Password, string Status, string PasswordExpired, string Text, string DefaultLibrary = "QGPL",
+    string GroupProfile = "*NONE", string SupplementalGroups = "", string SpecialAuthorities = "*NONE");
 
 /// <summary>
 /// An object made from a member: type *PGM or *FILE, with the source it was made from. Its attribute is
@@ -263,6 +269,9 @@ public sealed partial class Store : IDisposable
         CREATE TABLE IF NOT EXISTS qgpl.qsim_user (
             username TEXT NOT NULL PRIMARY KEY, password TEXT NOT NULL, status TEXT NOT NULL DEFAULT '*ENABLED',
             pwdexp TEXT NOT NULL DEFAULT '*NO', text TEXT NOT NULL DEFAULT '', dftlib TEXT NOT NULL DEFAULT 'QGPL');
+        ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS grpprf TEXT NOT NULL DEFAULT '*NONE';
+        ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS supgrpprf TEXT NOT NULL DEFAULT '';
+        ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS spcaut TEXT NOT NULL DEFAULT '*NONE';
         CREATE TABLE IF NOT EXISTS qgpl.qsim_library (name TEXT NOT NULL PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS qgpl.sysdummy1 (ibmreqd CHAR(1) NOT NULL);
         INSERT INTO qgpl.sysdummy1 SELECT 'Y' WHERE NOT EXISTS (SELECT 1 FROM qgpl.sysdummy1);
@@ -614,23 +623,36 @@ public sealed partial class Store : IDisposable
 
     // ---- users ----
 
-    private static UserRow ReadUser(NpgsqlDataReader r) => new(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5));
+    private const string UserColumns = "username, password, status, pwdexp, text, dftlib, grpprf, supgrpprf, spcaut";
+
+    private static UserRow ReadUser(NpgsqlDataReader r) =>
+        new(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6), r.GetString(7), r.GetString(8));
 
     /// <summary>Every user profile, by name.</summary>
-    public IReadOnlyList<UserRow> UserRows() =>
-        Query("SELECT username, password, status, pwdexp, text, dftlib FROM qgpl.qsim_user ORDER BY username", ReadUser);
+    public IReadOnlyList<UserRow> UserRows() => Query($"SELECT {UserColumns} FROM qgpl.qsim_user ORDER BY username", ReadUser);
 
     public UserRow? FindUser(string name) =>
-        Query("SELECT username, password, status, pwdexp, text, dftlib FROM qgpl.qsim_user WHERE username = @n", ReadUser, ("n", name)).FirstOrDefault();
+        Query($"SELECT {UserColumns} FROM qgpl.qsim_user WHERE username = @n", ReadUser, ("n", name)).FirstOrDefault();
 
     /// <summary>Adds the user, or replaces the one of that name.</summary>
     public void SaveUser(UserRow user) =>
-        Run("""
-            INSERT INTO qgpl.qsim_user (username, password, status, pwdexp, text, dftlib) VALUES (@u, @p, @s, @e, @t, @d)
+        Run($"""
+            INSERT INTO qgpl.qsim_user ({UserColumns}) VALUES (@u, @p, @s, @e, @t, @d, @g, @sg, @sa)
             ON CONFLICT (username) DO UPDATE SET password = excluded.password, status = excluded.status, pwdexp = excluded.pwdexp,
-                text = excluded.text, dftlib = excluded.dftlib
+                text = excluded.text, dftlib = excluded.dftlib, grpprf = excluded.grpprf, supgrpprf = excluded.supgrpprf, spcaut = excluded.spcaut
             """,
-            ("u", user.User), ("p", user.Password), ("s", user.Status), ("e", user.PasswordExpired), ("t", user.Text), ("d", user.DefaultLibrary));
+            ("u", user.User), ("p", user.Password), ("s", user.Status), ("e", user.PasswordExpired), ("t", user.Text), ("d", user.DefaultLibrary),
+            ("g", user.GroupProfile), ("sg", user.SupplementalGroups), ("sa", user.SpecialAuthorities));
+
+    /// <summary>Removes the user; false when there is none of that name.</summary>
+    public bool DeleteUser(string name)
+    {
+        lock (Gate)
+        {
+            using var command = Command("DELETE FROM qgpl.qsim_user WHERE username = @u", [("u", name)]);
+            return command.ExecuteNonQuery() > 0;
+        }
+    }
 
     /// <summary>Keeps a user's password and flags, as signing on changes them, leaving its text.</summary>
     public void UpdateUser(string name, string password, bool disabled, bool passwordExpired) =>
