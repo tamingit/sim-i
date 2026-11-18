@@ -186,6 +186,7 @@ public abstract class HostServer : IAsyncDisposable
             return null;
         }
         Log($"{LogName} #{id} signed on as {profile!.User}");
+        users.NoteSignOn(profile);
         return profile;
     }
 
@@ -259,12 +260,13 @@ public abstract class HostServer : IAsyncDisposable
         return bytes;
     }
 
-    protected static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken cancel)
+    /// <summary>One request; longer than <paramref name="maxLength"/> (1 MiB unless a server says) is refused.</summary>
+    protected static async Task<byte[]> ReadFrameAsync(Stream stream, CancellationToken cancel, int maxLength = 1 << 20)
     {
         var header = new byte[20];
         await stream.ReadExactlyAsync(header, cancel);
         var length = BinaryPrimitives.ReadInt32BigEndian(header);
-        if (length < 20 || length > 1 << 20) throw new InvalidDataException("bad length");
+        if (length < 20 || length > maxLength) throw new InvalidDataException("bad length");
         var frame = new byte[length];
         header.CopyTo(frame, 0);
         await stream.ReadExactlyAsync(frame.AsMemory(20), cancel);

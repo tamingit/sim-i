@@ -3,15 +3,31 @@
 // host servers do (random seeds, then start server), then answers:
 //
 //   22 exchange attributes -> 8009: datastream level 24, path names in CCSID 1200 (UTF-16)
-//    2 open                -> 8002: a handle, the file's dates and its size (64-bit at byte 89)
+//    2 open                -> 8002: a handle, the file's dates and its size (64-bit at byte 89);
+//                             for reading, writing or both, with the open option (create or open,
+//                             create or replace, create but fail if there, open or fail, replace)
 //    3 read                -> 8003: the data as code point 0005; none at the end of the file
+//    4 write               -> 800B: the return code at 22, the length not written at 28
 //    9 close               -> 8004
+//   12 delete file, 13 create folder, 14 delete folder (only an empty one), 15 rename (never
+//                             over a name in use) -> 8001 with return code 0, or a refusal
+//   10 list attributes     -> a chain of 8005, one per entry of a folder that matches the
+//                             pattern (folder/*), then return code 18 (no more files); return
+//                             code 2 alone when nothing matches (an empty folder). Each entry has
+//                             a restart ID at 77; a listing goes on after a restart ID (code point
+//                             14) or name (7)
 //
 // Anything it refuses is reply 8001 with a return code at byte 22: 2 no such file, 3 no such
-// folder, 4 a folder opened as a file, 6 no such handle, 13 not authorised (a path out of the IFS),
-// 23 a request it doesn't support. Each layout was checked against a real IBM i (datastream level
-// 24): the replies are the ones it sent, byte for byte where they matter to a client. Files open
-// for reading only; writing, creating and listing folders aren't supported yet (23).
+// folder, 4 a name already in use (or a folder opened as a file), 6 no such handle, 9 a folder
+// that isn't empty, 13 not authorised (a path out of the IFS, a write into /QSYS.LIB, or writing
+// through a handle opened for reading), 23 a request it doesn't support. The reading requests
+// were checked against a real IBM i (datastream level 24): the replies are the ones it sent, byte
+// for byte where they matter to a client. The writing requests follow IBM's Toolbox for Java's
+// layouts, not yet checked against a real IBM i.
+// Text is kept as UTF-8, which is what Sim i's programs read: a file a client creates or replaces
+// tagged with another text CCSID (37, 367, 819, 1252, 1200, 13488) is converted to UTF-8 when it is
+// closed. A file that doesn't look like text in that CCSID (a NUL byte, broken UTF-16) is kept as
+// sent, as are UTF-8 (1208), binary (65535) and untagged ones.
 // It logs each request and path, never a file's contents.
 
 using System.Buffers.Binary;
@@ -36,13 +52,21 @@ public sealed class FileServer : HostServer
     /// <summary>The most files one connection keeps open.</summary>
     public const int MaxOpen = 256;
 
-    public const int FileNotFound = 2, PathNotFound = 3, NotAFile = 4, InvalidHandle = 6, ResourceLimit = 11,
-        AccessDenied = 13, NotSupported = 23;
+    public const int FileNotFound = 2, PathNotFound = 3, NotAFile = 4, AlreadyThere = 4, InvalidHandle = 6, NotEmpty = 9,
+        ResourceLimit = 11, AccessDenied = 13, NoMoreFiles = 18, NotSupported = 23;
 
-    private const ushort Exchange = 22, Open = 2, Read = 3, Close = 9;
-    private const ushort ReturnCodeReply = 0x8001, OpenReply = 0x8002, ReadReply = 0x8003, CloseReply = 0x8004, ExchangeReply = 0x8009;
+    /// <summary>The longest request it reads: a write's data comes in one, and the exchange offers 1 GiB blocks.</summary>
+    public const int MaxFrame = 64 << 20;
 
-    private const ushort AccessRead = 1;
+    private const ushort Exchange = 22, Open = 2, Read = 3, Write = 4, Close = 9, List = 10, DeleteFile = 12, CreateFolder = 13,
+        DeleteFolder = 14, Rename = 15;
+    private const ushort ReturnCodeReply = 0x8001, OpenReply = 0x8002, ReadReply = 0x8003, CloseReply = 0x8004, ListReply = 0x8005,
+        ExchangeReply = 0x8009, WriteReply = 0x800B;
+
+    private const ushort AccessRead = 1, AccessWrite = 2, AccessReadWrite = 3;
+
+    /// <summary>Open options: create or open, create or replace, create but fail if there, open but fail if not, replace but fail if not.</summary>
+    private const ushort CreateOpen = 1, CreateReplace = 2, CreateFail = 4, FailOpen = 8, FailReplace = 16;
 
     private FileServer(int port, Action<string>? log, IPAddress? address, Users? users, TlsOptions? tls, Ifs ifs)
         : base(port, log, address, tls)
@@ -78,16 +102,25 @@ public sealed class FileServer : HostServer
         var profile = await StartServerAsync(stream, id, ServerId, Users);
         if (profile is null) return;
         var open = new Dictionary<int, FileStream>();
+        // Files created or replaced with a text CCSID other than UTF-8: converted when closed.
+        var toUtf8 = new Dictionary<int, (string Host, int Ccsid)>();
         var next = 1;
         try
         {
             while (true)
             {
-                var request = await ReadFrameAsync(stream, Stopping);
+                var request = await ReadFrameAsync(stream, Stopping, MaxFrame);
                 if (ServerIdOf(request) != ServerId) throw new InvalidDataException("not a file server request");
                 var correlation = CorrelationOf(request);
                 byte[] reply;
                 string what;
+                if (RequestIdOf(request) == List)
+                {
+                    var (replies, listed) = ListFolder(request, correlation);
+                    foreach (var each in replies) await stream.WriteAsync(each, Stopping);
+                    Log($"file #{id} {listed}");
+                    continue;
+                }
                 switch (RequestIdOf(request))
                 {
                     case Exchange:
@@ -95,13 +128,24 @@ public sealed class FileServer : HostServer
                         reply = ExchangeAttributes(correlation);
                         break;
                     case Open:
-                        (reply, what) = OpenFile(request, correlation, open, ref next);
+                        (reply, what) = OpenFile(request, correlation, open, toUtf8, ref next);
                         break;
                     case Read:
                         (reply, what) = ReadFile(request, correlation, open);
                         break;
                     case Close:
-                        (reply, what) = CloseFile(request, correlation, open);
+                        (reply, what) = CloseFile(request, correlation, open, toUtf8);
+                        break;
+                    case Write:
+                        (reply, what) = WriteFile(request, correlation, open);
+                        break;
+                    case CreateFolder:
+                    case DeleteFolder:
+                    case DeleteFile:
+                        (reply, what) = ByName(request, correlation, RequestIdOf(request));
+                        break;
+                    case Rename:
+                        (reply, what) = RenameEntry(request, correlation);
                         break;
                     default:
                         what = $"request {RequestIdOf(request)}";
@@ -115,6 +159,7 @@ public sealed class FileServer : HostServer
         finally
         {
             foreach (var file in open.Values) await file.DisposeAsync();
+            foreach (var (host, ccsid) in toUtf8.Values) ConvertToUtf8(host, ccsid);
         }
     }
 
@@ -127,42 +172,56 @@ public sealed class FileServer : HostServer
         return Frame(ServerId, ExchangeReply, template, correlation, 0, (0x000A, new byte[] { PathCcsid >> 8, PathCcsid & 0xFF }));
     }
 
-    private (byte[] Reply, string What) OpenFile(byte[] request, int correlation, Dictionary<int, FileStream> open, ref int next)
+    private (byte[] Reply, string What) OpenFile(byte[] request, int correlation, Dictionary<int, FileStream> open,
+        Dictionary<int, (string Host, int Ccsid)> toUtf8, ref int next)
     {
         var templateLength = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(16));
-        if (request.Length < 32) throw new InvalidDataException("short open");
+        if (request.Length < 38) throw new InvalidDataException("short open");
         var name = CodePoints(request, 20 + templateLength).GetValueOrDefault(0x0002);
         if (name is null || name.Length % 2 != 0) throw new InvalidDataException("open without a name");
         var path = Ifs.Absolute(Encoding.BigEndianUnicode.GetString(name));
         var access = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(30));
-        var what = $"open {path}";
-        if (access != AccessRead) return (ReturnCode(correlation, NotSupported), what + " for writing");
+        var option = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(36));
+        var what = $"open {path}{(access == AccessRead ? "" : " for writing")}";
+        if (access is not (AccessRead or AccessWrite or AccessReadWrite)) return (ReturnCode(correlation, NotSupported), what);
+        // Reading an existing file, the one way the earlier clients open: anything else may write.
+        var writes = access != AccessRead || option is not (FailOpen or 0);
 
-        string host;
-        try
-        {
-            host = Ifs.HostPath(path);
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return (ReturnCode(correlation, AccessDenied), what);
-        }
+        var (host, refused) = Resolve(path, writes);
+        if (host is null) return (ReturnCode(correlation, refused), what);
         if (Directory.Exists(host)) return (ReturnCode(correlation, NotAFile), what);
-        if (!File.Exists(host))
-            return (ReturnCode(correlation, Directory.Exists(Path.GetDirectoryName(host)) ? FileNotFound : PathNotFound), what);
+        if (!Directory.Exists(Path.GetDirectoryName(host))) return (ReturnCode(correlation, PathNotFound), what);
+        var exists = File.Exists(host);
+        if (exists && option == CreateFail) return (ReturnCode(correlation, AlreadyThere), what);
+        if (!exists && (option is FailOpen or FailReplace or 0)) return (ReturnCode(correlation, FileNotFound), what);
         if (open.Count >= MaxOpen) return (ReturnCode(correlation, ResourceLimit), what);
 
+        var replace = exists && option is CreateReplace or FailReplace;
+        var mode = !exists ? FileMode.CreateNew : replace ? FileMode.Truncate : FileMode.Open;
+        var rights = access switch
+        {
+            AccessWrite => FileAccess.Write,
+            AccessReadWrite => FileAccess.ReadWrite,
+            _ => replace ? FileAccess.ReadWrite : FileAccess.Read,
+        };
         FileStream file;
         try
         {
-            file = new FileStream(host, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            file = new FileStream(host, mode, rights, FileShare.ReadWrite | FileShare.Delete);
         }
         catch (UnauthorizedAccessException)
         {
             return (ReturnCode(correlation, AccessDenied), what);
         }
+        catch (IOException) when (mode == FileMode.CreateNew)
+        {
+            return (ReturnCode(correlation, AlreadyThere), what);
+        }
         var handle = next++;
         open[handle] = file;
+        // The file data's CCSID at 28: a new or emptied text file in another CCSID becomes UTF-8 when closed.
+        var ccsid = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(28));
+        if (file.CanWrite && (!exists || replace) && TextEncoding(ccsid) is not null) toUtf8[handle] = (host, ccsid);
         var info = new FileInfo(host);
 
         // The template as the IBM i sends it at level 16 and up (77 bytes): the handle at 22, an
@@ -179,6 +238,122 @@ public sealed class FileServer : HostServer
         BinaryPrimitives.WriteInt32BigEndian(t[46..], 0x20);
         BinaryPrimitives.WriteInt64BigEndian(t[69..], info.Length);
         return (Frame(ServerId, OpenReply, template, correlation), what);
+    }
+
+    /// <summary>
+    /// The host path of an IFS path, or the return code that refuses it: 13 for a path that leads
+    /// out of the IFS, or (when it would change something) one in /QSYS.LIB, whose libraries are
+    /// in the database, not files.
+    /// </summary>
+    private (string? Host, int Refused) Resolve(string path, bool writes)
+    {
+        if (writes && Ifs.InQsys(path)) return (null, AccessDenied);
+        try
+        {
+            return (Ifs.HostPath(path), 0);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (null, AccessDenied);
+        }
+    }
+
+    /// <summary>A name sent as code point <paramref name="codePoint"/> after the template, as an absolute IFS path.</summary>
+    private static string NameIn(byte[] request, ushort codePoint)
+    {
+        var templateLength = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(16));
+        var name = CodePoints(request, 20 + templateLength).GetValueOrDefault(codePoint);
+        if (name is null || name.Length % 2 != 0) throw new InvalidDataException($"no name (code point {codePoint})");
+        return Ifs.Absolute(Encoding.BigEndianUnicode.GetString(name));
+    }
+
+    /// <summary>
+    /// Write: the handle at 22, the offset 64-bit at 46 (a 34-byte template) or 32-bit at 30, the
+    /// bytes as code point 0020 after the template. Reply 800B: return code at 22, not written at 28.
+    /// </summary>
+    private static (byte[] Reply, string What) WriteFile(byte[] request, int correlation, Dictionary<int, FileStream> open)
+    {
+        if (request.Length < 38) throw new InvalidDataException("short write");
+        var handle = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(22));
+        var what = $"write handle {handle}";
+        if (!open.TryGetValue(handle, out var file)) return (ReturnCode(correlation, InvalidHandle), what);
+        if (!file.CanWrite) return (ReturnCode(correlation, AccessDenied), what + ": opened for reading");
+        var templateLength = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(16));
+        var offset = templateLength >= 34 && request.Length >= 54
+            ? BinaryPrimitives.ReadInt64BigEndian(request.AsSpan(46))
+            : BinaryPrimitives.ReadUInt32BigEndian(request.AsSpan(30));
+        var data = CodePoints(request, 20 + templateLength).GetValueOrDefault(0x0020) ?? [];
+        if (offset < 0) throw new InvalidDataException("negative offset");
+        file.Position = offset;
+        file.Write(data);
+        file.Flush();
+        var template = new byte[12];
+        return (Frame(ServerId, WriteReply, template, correlation), $"{what}: {data.Length} bytes at {offset}");
+    }
+
+    /// <summary>Create folder (13, name as code point 1), delete folder (14, 1) and delete file (12, 2): return code 0, or why not.</summary>
+    private (byte[] Reply, string What) ByName(byte[] request, int correlation, ushort requestId)
+    {
+        var path = NameIn(request, requestId == DeleteFile ? (ushort)2 : (ushort)1);
+        var what = requestId switch { CreateFolder => "create folder", DeleteFolder => "delete folder", _ => "delete file" } + $" {path}";
+        var (host, refused) = Resolve(path, writes: true);
+        if (host is null) return (ReturnCode(correlation, refused), what);
+        var parent = Directory.Exists(Path.GetDirectoryName(host));
+        try
+        {
+            switch (requestId)
+            {
+                case CreateFolder:
+                    if (File.Exists(host) || Directory.Exists(host)) return (ReturnCode(correlation, AlreadyThere), what);
+                    if (!parent) return (ReturnCode(correlation, PathNotFound), what);
+                    Directory.CreateDirectory(host);
+                    break;
+                case DeleteFolder:
+                    if (!Directory.Exists(host)) return (ReturnCode(correlation, File.Exists(host) ? NotAFile : PathNotFound), what);
+                    if (Directory.EnumerateFileSystemEntries(host).Any()) return (ReturnCode(correlation, NotEmpty), what);
+                    Directory.Delete(host);
+                    break;
+                default:
+                    if (Directory.Exists(host)) return (ReturnCode(correlation, NotAFile), what);
+                    if (!File.Exists(host)) return (ReturnCode(correlation, parent ? FileNotFound : PathNotFound), what);
+                    File.Delete(host);
+                    break;
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (ReturnCode(correlation, AccessDenied), what);
+        }
+        return (ReturnCode(correlation, 0), what);
+    }
+
+    /// <summary>Rename (15): the old name as code point 3, the new as 4; a name in use is refused (4), never replaced.</summary>
+    private (byte[] Reply, string What) RenameEntry(byte[] request, int correlation)
+    {
+        var from = NameIn(request, 3);
+        var to = NameIn(request, 4);
+        var what = $"rename {from} to {to}";
+        var (source, refusedFrom) = Resolve(from, writes: true);
+        if (source is null) return (ReturnCode(correlation, refusedFrom), what);
+        var (target, refusedTo) = Resolve(to, writes: true);
+        if (target is null) return (ReturnCode(correlation, refusedTo), what);
+        var isFolder = Directory.Exists(source);
+        if (!isFolder && !File.Exists(source))
+            return (ReturnCode(correlation, Directory.Exists(Path.GetDirectoryName(source)) ? FileNotFound : PathNotFound), what);
+        // A new name that differs only in case is the same entry, renamed.
+        var sameEntry = string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase);
+        if (!sameEntry && (File.Exists(target) || Directory.Exists(target))) return (ReturnCode(correlation, AlreadyThere), what);
+        if (!Directory.Exists(Path.GetDirectoryName(target))) return (ReturnCode(correlation, PathNotFound), what);
+        try
+        {
+            if (isFolder) Directory.Move(source, target);
+            else File.Move(source, target);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (ReturnCode(correlation, AccessDenied), what);
+        }
+        return (ReturnCode(correlation, 0), what);
     }
 
     private static (byte[] Reply, string What) ReadFile(byte[] request, int correlation, Dictionary<int, FileStream> open)
@@ -203,14 +378,173 @@ public sealed class FileServer : HostServer
         return (Frame(ServerId, ReadReply, [0, 0, 0xFF, 0xFF], correlation, 0, (0x0005, data)), $"{what}: {data.Length} bytes at {offset}");
     }
 
-    private static (byte[] Reply, string What) CloseFile(byte[] request, int correlation, Dictionary<int, FileStream> open)
+    /// <summary>
+    /// List attributes by name: the pattern is a folder and a name that may hold * and ?, found
+    /// whatever its case (folder/* lists the folder). Each entry is a reply of its own, chained,
+    /// then return code 18 ends the chain; the most entries at byte 34 is honoured (FFFF: no limit).
+    /// </summary>
+    private (List<byte[]> Replies, string What) ListFolder(byte[] request, int correlation)
+    {
+        if (request.Length < 46) throw new InvalidDataException("short list");
+        var templateLength = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(16));
+        var name = CodePoints(request, 20 + templateLength).GetValueOrDefault(0x0002);
+        if (name is null || name.Length % 2 != 0) throw new InvalidDataException("list without a name");
+        var pattern = Encoding.BigEndianUnicode.GetString(name);
+        var most = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(34)) is var m and > 0 and < 0xFFFF ? m : int.MaxValue;
+        var cut = pattern.LastIndexOf('/');
+        var folder = Ifs.Absolute(cut <= 0 ? "/" : pattern[..cut]);
+        var glob = pattern[(cut + 1)..] is { Length: > 0 } g ? g : "*";
+        var what = $"list {folder}";
+
+        string host;
+        try
+        {
+            host = Ifs.HostPath(folder);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return ([ReturnCode(correlation, AccessDenied)], what + ": rc 13");
+        }
+        if (!Directory.Exists(host)) return ([ReturnCode(correlation, PathNotFound)], what + ": rc 3");
+
+        var match = new System.Text.RegularExpressions.Regex(
+            "^" + System.Text.RegularExpressions.Regex.Escape(glob).Replace(@"\*", ".*").Replace(@"\?", ".") + "$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        // Where an earlier page ended: a restart ID (code point 14, an entry's position in this
+        // listing) or a restart name (7). The listing goes on after it.
+        var points = CodePoints(request, 20 + templateLength);
+        var after = points.TryGetValue(14, out var id) && id.Length == 4 ? BinaryPrimitives.ReadInt32BigEndian(id) : 0;
+        var afterName = after == 0 && points.TryGetValue(7, out var restart) && restart.Length % 2 == 0
+            ? Encoding.BigEndianUnicode.GetString(restart)
+            : null;
+        var replies = new List<byte[]>();
+        var position = 0;
+        foreach (var entry in new DirectoryInfo(host).EnumerateFileSystemInfos().OrderBy(e => e.Name, StringComparer.Ordinal))
+        {
+            if (!match.IsMatch(entry.Name)) continue;
+            position++;
+            if (position <= after || (afterName is not null && string.CompareOrdinal(entry.Name, afterName) <= 0)) continue;
+            if (replies.Count >= most) break;
+            replies.Add(Entry(entry, correlation, position));
+        }
+        // After entries the chain ends with 18; with none (an empty folder, or nothing matched) the
+        // IBM i answers 2 alone.
+        var count = replies.Count;
+        replies.Add(ReturnCode(correlation, count == 0 ? FileNotFound : NoMoreFiles));
+        return (replies, $"{what}: {count} entries");
+    }
+
+    /// <summary>
+    /// One entry, as the IBM i sends it (a 93-byte template): chained (1 at 20), the creation,
+    /// modification and access dates at 22, 30 and 38, the restart ID at 77 (its position in the
+    /// listing), the size at 46 (32-bit) and 81 (64-bit),
+    /// the fixed attributes at 50 (10 a folder, 20 a file), the object type at 54 (2 a folder, 1 a
+    /// file), then the name as code point 0002 (UTF-16).
+    /// </summary>
+    private static byte[] Entry(FileSystemInfo entry, int correlation, int position)
+    {
+        var folder = entry is DirectoryInfo;
+        var size = entry is FileInfo file ? file.Length : 0;
+        var template = new byte[93];
+        var t = template.AsSpan();
+        BinaryPrimitives.WriteUInt16BigEndian(t, 1);
+        Date(t[2..], entry.CreationTimeUtc);
+        Date(t[10..], entry.LastWriteTimeUtc);
+        Date(t[18..], entry.LastAccessTimeUtc);
+        BinaryPrimitives.WriteUInt32BigEndian(t[26..], (uint)Math.Min(size, uint.MaxValue));
+        BinaryPrimitives.WriteInt32BigEndian(t[30..], folder ? 0x10 : 0x20);
+        BinaryPrimitives.WriteUInt16BigEndian(t[34..], folder ? (ushort)2 : (ushort)1);
+        // The restart ID at 77: where a listing can go on from.
+        BinaryPrimitives.WriteInt32BigEndian(t[57..], position);
+        BinaryPrimitives.WriteInt64BigEndian(t[61..], size);
+        return Frame(ServerId, ListReply, template, correlation, 0, (0x0002, Encoding.BigEndianUnicode.GetBytes(entry.Name)));
+    }
+
+    private static (byte[] Reply, string What) CloseFile(byte[] request, int correlation, Dictionary<int, FileStream> open,
+        Dictionary<int, (string Host, int Ccsid)> toUtf8)
     {
         if (request.Length < 26) throw new InvalidDataException("short close");
         var handle = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(22));
         var what = $"close handle {handle}";
         if (!open.Remove(handle, out var file)) return (ReturnCode(correlation, InvalidHandle), what);
         file.Dispose();
+        if (toUtf8.Remove(handle, out var text) && ConvertToUtf8(text.Host, text.Ccsid))
+            what += $" (converted from CCSID {text.Ccsid} to UTF-8)";
         return (Frame(ServerId, CloseReply, new byte[8], correlation), what);
+    }
+
+    /// <summary>The largest file converted to UTF-8; a larger one is kept as sent.</summary>
+    public const int MaxConvert = 64 << 20;
+
+    /// <summary>The encoding of a text CCSID other than UTF-8 that Sim i converts from, or null.</summary>
+    public static System.Text.Encoding? TextEncoding(int ccsid)
+    {
+        System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+        return ccsid switch
+        {
+            37 => EbcdicEncoding.Instance,
+            367 => System.Text.Encoding.ASCII,
+            819 => System.Text.Encoding.Latin1,
+            1252 => System.Text.Encoding.GetEncoding(1252),
+            1200 or 13488 => new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Rewrites a text file in a CCSID other than UTF-8 as UTF-8 (no byte order mark). Returns false,
+    /// leaving it as it is, when it isn't text in that CCSID (a NUL byte in a single-byte one, or
+    /// broken UTF-16), is too large, or is gone.
+    /// </summary>
+    public static bool ConvertToUtf8(string host, int ccsid)
+    {
+        var encoding = TextEncoding(ccsid);
+        if (encoding is null) return false;
+        try
+        {
+            var info = new FileInfo(host);
+            if (!info.Exists || info.Length > MaxConvert) return false;
+            var bytes = File.ReadAllBytes(host);
+            var wide = ccsid is 1200 or 13488;
+            if (wide ? bytes.Length % 2 != 0 : bytes.Contains((byte)0)) return false;
+            // A UTF-16 byte order mark isn't text.
+            var start = wide && bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF ? 2 : 0;
+            var text = encoding.GetString(bytes, start, bytes.Length - start);
+            File.WriteAllBytes(host, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(text));
+            return true;
+        }
+        catch (Exception e) when (e is DecoderFallbackException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>CCSID 37 (EBCDIC) as an Encoding, through Sim i's own table.</summary>
+    private sealed class EbcdicEncoding : System.Text.Encoding
+    {
+        public static readonly EbcdicEncoding Instance = new();
+
+        public override int GetByteCount(char[] chars, int index, int count) =>
+            Ebcdic.Encode(new string(chars, index, count)).Length;
+
+        public override int GetBytes(char[] chars, int charIndex, int charCount, byte[] bytes, int byteIndex)
+        {
+            var encoded = Ebcdic.Encode(new string(chars, charIndex, charCount));
+            encoded.CopyTo(bytes, byteIndex);
+            return encoded.Length;
+        }
+
+        public override int GetCharCount(byte[] bytes, int index, int count) => count;
+
+        public override int GetChars(byte[] bytes, int byteIndex, int byteCount, char[] chars, int charIndex)
+        {
+            Ebcdic.Decode(bytes.AsSpan(byteIndex, byteCount)).CopyTo(0, chars, charIndex, byteCount);
+            return byteCount;
+        }
+
+        public override int GetMaxByteCount(int charCount) => charCount;
+
+        public override int GetMaxCharCount(int byteCount) => byteCount;
     }
 
     /// <summary>A refusal: reply 8001, the return code at byte 22.</summary>

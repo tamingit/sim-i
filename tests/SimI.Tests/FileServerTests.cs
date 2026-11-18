@@ -98,8 +98,11 @@ public sealed class FileServerTests : IDisposable
             Assert.Equal(2, ReturnCode(await client.SendAsync(Open("/tmp/no-such-file.txt"))));
             Assert.Equal(4, ReturnCode(await client.SendAsync(Open("/tmp/folder"))));
             Assert.Equal(13, ReturnCode(await client.SendAsync(Open("/escape/secret.txt"))));
-            Assert.Equal(23, ReturnCode(await client.SendAsync(Open("/tmp/note.txt", access: 2))));
+            // Writing: a file already there isn't created again; /QSYS.LIB's libraries aren't files.
+            Assert.Equal(4, ReturnCode(await client.SendAsync(Open("/tmp/note.txt", access: 2, option: 4))));
+            Assert.Equal(13, ReturnCode(await client.SendAsync(Open("/QSYS.LIB/x.txt", access: 2, option: 4))));
             Assert.Equal(23, ReturnCode(await client.SendAsync(Frame(18, new byte[14]))));
+            Assert.Equal(13, ReturnCode(Assert.Single(await client.ListAsync("/escape/*"))));
             Assert.Equal(6, ReturnCode(await client.SendAsync(Read(99, 0, 16))));
 
             // The connection still works after refusals.
@@ -109,6 +112,214 @@ public sealed class FileServerTests : IDisposable
         {
             Directory.Delete(outside, true);
         }
+    }
+
+    [Fact]
+    public async Task AFolderListsAsAChainOfEntriesThenNoMoreFiles()
+    {
+        var ifs = NewIfs();
+        Directory.CreateDirectory(ifs.HostPath("/home/prtuser/Reports"));
+        Directory.CreateDirectory(ifs.HostPath("/home/prtuser/empty"));
+        await File.WriteAllBytesAsync(ifs.HostPath("/home/prtuser/data.bin"), new byte[1234]);
+        await File.WriteAllTextAsync(ifs.HostPath("/home/prtuser/Note.TXT"), "placeholder");
+        await using var server = await FileServer.StartAsync(ifs);
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+
+        var replies = await client.ListAsync("/home/prtuser/*");
+        var entries = replies[..^1];
+        Assert.Equal(4, entries.Count);
+        Assert.All(entries, e =>
+        {
+            Assert.Equal(0x8005, Short(e, 18));
+            Assert.Equal(93, Short(e, 16));
+            Assert.Equal(1, Short(e, 20));
+            Assert.Equal(2, Short(e, 117));
+        });
+        Assert.Equal(18, ReturnCode(replies[^1]));
+        Assert.Equal(0, Short(replies[^1], 20));
+        var byName = entries.ToDictionary(Name);
+        Assert.Equal(["Note.TXT", "Reports", "data.bin", "empty"], byName.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal((2, 0x10), (Short(byName["Reports"], 54), Int(byName["Reports"], 50)));
+        Assert.Equal((1, 0x20), (Short(byName["data.bin"], 54), Int(byName["data.bin"], 50)));
+        Assert.Equal(1234, BinaryPrimitives.ReadInt64BigEndian(byName["data.bin"].AsSpan(81)));
+        Assert.Equal(1234, Int(byName["data.bin"], 46));
+        Assert.True(BinaryPrimitives.ReadUInt32BigEndian(byName["data.bin"].AsSpan(30)) > 1_600_000_000);
+
+        // A pattern, whatever its case; the most entries; an empty folder; none there.
+        Assert.Equal(["Note.TXT"], (await client.ListAsync("/HOME/prtuser/*.txt"))[..^1].Select(Name));
+        Assert.Equal(2, (await client.ListAsync("/home/prtuser/*", most: 2)).Count - 1);
+        // An empty folder is return code 2 alone, as the IBM i answers.
+        Assert.Equal(2, ReturnCode(Assert.Single(await client.ListAsync("/home/prtuser/empty/*"))));
+        Assert.Equal(2, ReturnCode(Assert.Single(await client.ListAsync("/home/prtuser/*.none"))));
+        Assert.Equal(3, ReturnCode(Assert.Single(await client.ListAsync("/no-such-folder/*"))));
+        Assert.Equal(0x8002, Short(await client.SendAsync(Open("/home/prtuser/data.bin")), 18));
+    }
+
+    private static string Name(byte[] entry) => Encoding.BigEndianUnicode.GetString(entry, 119, Int(entry, 113) - 6);
+
+    [Fact]
+    public async Task AFileIsCreatedWrittenReadBackAndReplaced()
+    {
+        var ifs = NewIfs();
+        Directory.CreateDirectory(ifs.HostPath("/tmp"));
+        await using var server = await FileServer.StartAsync(ifs);
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+
+        // Create, but fail if it's there (option 4); two writes, the second past 1 MiB in one request.
+        var data = new byte[1_500_000];
+        new Random(3).NextBytes(data);
+        var created = await client.SendAsync(Open("/tmp/new.bin", access: 2, option: 4));
+        Assert.Equal(0x8002, Short(created, 18));
+        var handle = Int(created, 22);
+        var first = await client.SendAsync(Write(handle, 0, data[..1000]));
+        Assert.Equal((0x800B, 0, 0), (Short(first, 18), Short(first, 22), Int(first, 28)));
+        Assert.Equal(0x800B, Short(await client.SendAsync(Write(handle, 1000, data[1000..])), 18));
+        Assert.Equal(0x8004, Short(await client.SendAsync(Close(handle)), 18));
+        Assert.Equal(data, await File.ReadAllBytesAsync(ifs.HostPath("/tmp/new.bin")));
+
+        Assert.Equal(4, ReturnCode(await client.SendAsync(Open("/tmp/new.bin", access: 2, option: 4))));
+        // Create or replace (2) empties it first.
+        var replaced = await client.SendAsync(Open("/tmp/new.bin", access: 2, option: 2));
+        Assert.Equal(0, BinaryPrimitives.ReadInt64BigEndian(replaced.AsSpan(89)));
+        await client.SendAsync(Write(Int(replaced, 22), 0, [1, 2, 3]));
+        await client.SendAsync(Close(Int(replaced, 22)));
+        Assert.Equal([1, 2, 3], await File.ReadAllBytesAsync(ifs.HostPath("/tmp/new.bin")));
+
+        // Not through a handle opened for reading; not into a folder that isn't there.
+        var reading = await client.SendAsync(Open("/tmp/new.bin"));
+        Assert.Equal(13, ReturnCode(await client.SendAsync(Write(Int(reading, 22), 0, [9]))));
+        Assert.Equal(3, ReturnCode(await client.SendAsync(Open("/tmp/none/x.bin", access: 2, option: 4))));
+        Assert.Equal(2, ReturnCode(await client.SendAsync(Open("/tmp/none.bin", access: 2, option: 8))));
+    }
+
+    [Fact]
+    public async Task TextInAnotherCcsidIsKeptAsUtf8AndEverythingElseAsSent()
+    {
+        var ifs = NewIfs();
+        Directory.CreateDirectory(ifs.HostPath("/tmp"));
+        System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+        await using var server = await FileServer.StartAsync(ifs);
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+
+        async Task<byte[]> SendAsync(string path, ushort ccsid, byte[] data, ushort option = 4, bool close = true)
+        {
+            var opened = await client.SendAsync(Open(path, access: 2, option: option, ccsid: ccsid));
+            Assert.Equal(0x8002, Short(opened, 18));
+            await client.SendAsync(Write(Int(opened, 22), 0, data));
+            if (close) await client.SendAsync(Close(Int(opened, 22)));
+            return close ? await File.ReadAllBytesAsync(ifs.HostPath(path)) : [];
+        }
+        var utf8 = new UTF8Encoding(false);
+        const string accents = "Café, naïve, 5 €";
+        Assert.Equal(utf8.GetBytes(accents), await SendAsync("/tmp/w1252.csv", 1252, Encoding.GetEncoding(1252).GetBytes(accents)));
+        Assert.Equal(utf8.GetBytes("HELLO, SIM I"), await SendAsync("/tmp/ebcdic.txt", 37, Ebcdic.Encode("HELLO, SIM I")));
+        Assert.Equal(utf8.GetBytes(accents), await SendAsync("/tmp/wide.txt", 1200, [0xFE, 0xFF, .. Encoding.BigEndianUnicode.GetBytes(accents)]));
+        // Latin-1 has no euro sign.
+        Assert.Equal(utf8.GetBytes("Café, naïve, £5"), await SendAsync("/tmp/latin1.txt", 819, Encoding.Latin1.GetBytes("Café, naïve, £5")));
+
+        // Kept as sent: UTF-8 already, binary, a CCSID it doesn't know, and a file added to rather than made.
+        Assert.Equal(utf8.GetBytes(accents), await SendAsync("/tmp/utf8.txt", 1208, utf8.GetBytes(accents)));
+        byte[] binary = [0x50, 0x4B, 0x03, 0x04, 0x00, 0xE9, 0x80];
+        Assert.Equal(binary, await SendAsync("/tmp/archive.zip", 1252, binary));
+        Assert.Equal(binary, await SendAsync("/tmp/odd.bin", 65535, binary));
+        byte[] latin = Encoding.Latin1.GetBytes("é");
+        Assert.Equal(latin, await SendAsync("/tmp/other.txt", 500, latin));
+        await File.WriteAllBytesAsync(ifs.HostPath("/tmp/existing.txt"), latin);
+        Assert.Equal(latin, await SendAsync("/tmp/existing.txt", 1252, latin, option: 1));
+
+        // A file still open when the client goes is converted too.
+        await SendAsync("/tmp/left-open.txt", 1252, Encoding.GetEncoding(1252).GetBytes(accents), close: false);
+        await client.DisposeAsync();
+        await WaitForAsync(async () => (await File.ReadAllBytesAsync(ifs.HostPath("/tmp/left-open.txt"))).SequenceEqual(utf8.GetBytes(accents)));
+    }
+
+    private static async Task WaitForAsync(Func<Task<bool>> done)
+    {
+        for (var i = 0; i < 100 && !await done(); i++) await Task.Delay(50);
+        Assert.True(await done());
+    }
+
+    [Fact]
+    public async Task FoldersAreMadeAndDeletedAndNamesChange()
+    {
+        var ifs = NewIfs();
+        Directory.CreateDirectory(ifs.HostPath("/tmp"));
+        await File.WriteAllTextAsync(ifs.HostPath("/tmp/a.txt"), "placeholder");
+        await using var server = await FileServer.StartAsync(ifs);
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+
+        Assert.Equal(0, ReturnCode(await client.SendAsync(Named(13, 1, "/tmp/made"))));
+        Assert.True(Directory.Exists(ifs.HostPath("/tmp/made")));
+        Assert.Equal(4, ReturnCode(await client.SendAsync(Named(13, 1, "/tmp/made"))));
+        Assert.Equal(3, ReturnCode(await client.SendAsync(Named(13, 1, "/tmp/no/made"))));
+        Assert.Equal(13, ReturnCode(await client.SendAsync(Named(13, 1, "/QSYS.LIB/MYLIB.LIB"))));
+
+        Assert.Equal(0, ReturnCode(await client.SendAsync(RenameRequest("/tmp/a.txt", "/tmp/made/b.txt"))));
+        Assert.True(File.Exists(ifs.HostPath("/tmp/made/b.txt")));
+        await File.WriteAllTextAsync(ifs.HostPath("/tmp/c.txt"), "placeholder");
+        Assert.Equal(4, ReturnCode(await client.SendAsync(RenameRequest("/tmp/c.txt", "/tmp/made/b.txt"))));
+        Assert.Equal(2, ReturnCode(await client.SendAsync(RenameRequest("/tmp/none.txt", "/tmp/x.txt"))));
+        Assert.Equal(0, ReturnCode(await client.SendAsync(RenameRequest("/tmp/c.txt", "/tmp/C.TXT"))));
+
+        Assert.Equal(9, ReturnCode(await client.SendAsync(Named(14, 1, "/tmp/made"))));
+        Assert.Equal(4, ReturnCode(await client.SendAsync(Named(12, 2, "/tmp/made"))));
+        Assert.Equal(0, ReturnCode(await client.SendAsync(Named(12, 2, "/tmp/made/b.txt"))));
+        Assert.Equal(2, ReturnCode(await client.SendAsync(Named(12, 2, "/tmp/made/b.txt"))));
+        Assert.Equal(0, ReturnCode(await client.SendAsync(Named(14, 1, "/tmp/made"))));
+        Assert.False(Directory.Exists(ifs.HostPath("/tmp/made")));
+        Assert.Equal(3, ReturnCode(await client.SendAsync(Named(14, 1, "/tmp/made"))));
+    }
+
+    [Fact]
+    public async Task AListingGoesOnFromARestartIdOrName()
+    {
+        var ifs = NewIfs();
+        Directory.CreateDirectory(ifs.HostPath("/big"));
+        for (var i = 0; i < 25; i++) await File.WriteAllTextAsync(ifs.HostPath($"/big/f{i:00}.txt"), "x");
+        await using var server = await FileServer.StartAsync(ifs);
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+
+        var names = new List<string>();
+        byte[]? restart = null;
+        while (true)
+        {
+            var replies = await client.ListAsync("/big/*", most: 10, restartId: restart);
+            var entries = replies.Where(r => Short(r, 18) == 0x8005).ToList();
+            names.AddRange(entries.Select(Name));
+            if (entries.Count < 10) break;
+            restart = entries[^1].AsSpan(77, 4).ToArray();
+        }
+        Assert.Equal(Enumerable.Range(0, 25).Select(i => $"f{i:00}.txt"), names);
+
+        var afterName = (await client.ListAsync("/big/*", restartName: "f22.txt")).Where(r => Short(r, 18) == 0x8005).Select(Name);
+        Assert.Equal(["f23.txt", "f24.txt"], afterName);
+        Assert.Equal(2, ReturnCode(Assert.Single(await client.ListAsync("/big/*", restartName: "f24.txt"))));
+    }
+
+    [Fact]
+    public async Task SigningOnMakesTheUsersHomeDirectory()
+    {
+        var ifs = NewIfs();
+        var users = Users.Defaults();
+        var log = new List<string>();
+        ifs.MakeHomesFor(users, line => { lock (log) log.Add(line); });
+        await using var server = await FileServer.StartAsync(ifs, users: users);
+
+        // Before, there's no such folder (3); after the sign-on, it's there and empty (2), as a new user's is.
+        Assert.False(ifs.DirectoryExists("/home/PRTUSER"));
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+        Assert.Equal(2, ReturnCode(Assert.Single(await client.ListAsync("/home/PRTUSER/*"))));
+        Assert.Equal(["integrated file system: made /home/PRTUSER"], log);
+
+        // A refused sign-on makes nothing.
+        await Assert.ThrowsAnyAsync<Exception>(() => Client.SignOnAsync(server.Port, Users.DefaultExpiredUser, Users.DefaultExpiredPassword));
+        Assert.False(ifs.DirectoryExists("/home/" + Users.DefaultExpiredUser));
     }
 
     [Fact]
@@ -159,14 +370,15 @@ public sealed class FileServerTests : IDisposable
         return frame;
     }
 
-    private static byte[] Open(string path, ushort access = 1)
+    private static byte[] Open(string path, ushort access = 1, ushort option = 8, ushort ccsid = 0)
     {
         var name = Encoding.BigEndianUnicode.GetBytes(path);
         var template = new byte[44];
         BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(2), 1200);
         BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(4), 1);
         BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(10), access);
-        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(16), 8);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(16), option);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(8), ccsid);
         BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(26), 1);
         var tail = new byte[6 + name.Length];
         BinaryPrimitives.WriteInt32BigEndian(tail, tail.Length);
@@ -194,6 +406,65 @@ public sealed class FileServerTests : IDisposable
         var frame = Frame(9, template);
         BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(12), 5);
         return frame;
+    }
+
+    /// <summary>Write: a 34-byte template (handle at 22, 64-bit offset at 46), the data as code point 0020.</summary>
+    private static byte[] Write(int handle, long offset, byte[] data)
+    {
+        var template = new byte[34];
+        BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(2), handle);
+        BinaryPrimitives.WriteInt64BigEndian(template.AsSpan(26), offset);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(14), 2);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(16), 0xFFFF);
+        return Frame(4, template, CodePoint(0x0020, data));
+    }
+
+    /// <summary>Create folder (13) and delete folder (14), name as code point 1; delete file (12), as 2.</summary>
+    private static byte[] Named(ushort request, ushort codePoint, string path)
+    {
+        var template = new byte[request == 14 ? 10 : 8];
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(2), 1200);
+        BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(4), 1);
+        return Frame(request, template, CodePoint(codePoint, Encoding.BigEndianUnicode.GetBytes(path)));
+    }
+
+    /// <summary>Rename: a 16-byte template, the old name as code point 3, the new as 4.</summary>
+    private static byte[] RenameRequest(string from, string to)
+    {
+        var template = new byte[16];
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(2), 1200);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(4), 1200);
+        BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(6), 1);
+        BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(10), 1);
+        return Frame(15, template, [.. CodePoint(3, Encoding.BigEndianUnicode.GetBytes(from)), .. CodePoint(4, Encoding.BigEndianUnicode.GetBytes(to))]);
+    }
+
+    private static byte[] CodePoint(ushort id, byte[] data)
+    {
+        var point = new byte[6 + data.Length];
+        BinaryPrimitives.WriteInt32BigEndian(point, point.Length);
+        BinaryPrimitives.WriteUInt16BigEndian(point.AsSpan(4), id);
+        data.CopyTo(point, 6);
+        return point;
+    }
+
+    /// <summary>List attributes by name: the pattern, the most entries (FFFF: no limit), as JTOpen sends it.</summary>
+    private static byte[] List(string pattern, int most, byte[]? restartId = null, string? restartName = null)
+    {
+        var name = Encoding.BigEndianUnicode.GetBytes(pattern);
+        var template = new byte[20];
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(6), 1200);
+        BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(8), 1);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(14), (ushort)most);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(16), 1);
+        var tail = new byte[6 + name.Length];
+        BinaryPrimitives.WriteInt32BigEndian(tail, tail.Length);
+        BinaryPrimitives.WriteUInt16BigEndian(tail.AsSpan(4), 2);
+        name.CopyTo(tail, 6);
+        byte[] restart = restartId is not null ? CodePoint(14, restartId)
+            : restartName is not null ? CodePoint(7, Encoding.BigEndianUnicode.GetBytes(restartName))
+            : [];
+        return Frame(10, template, [.. tail, .. restart]);
     }
 
     private sealed class Client : IAsyncDisposable
@@ -236,16 +507,29 @@ public sealed class FileServerTests : IDisposable
             return point;
         }
 
-        public async Task<byte[]> SendAsync(byte[] frame)
+        /// <summary>Sends a list and reads every reply, to the one that ends the chain.</summary>
+        public async Task<List<byte[]>> ListAsync(string pattern, int most = 0xFFFF, byte[]? restartId = null, string? restartName = null)
         {
-            if (Int(frame, 12) == 0) BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(12), Interlocked.Increment(ref _correlation) + 100);
-            await _stream.WriteAsync(frame);
+            var replies = new List<byte[]> { await SendAsync(List(pattern, most, restartId, restartName)) };
+            while (Short(replies[^1], 18) != 0x8001 && Short(replies[^1], 20) != 0) replies.Add(await ReadAsync());
+            return replies;
+        }
+
+        private async Task<byte[]> ReadAsync()
+        {
             var header = new byte[20];
             await _stream.ReadExactlyAsync(header);
             var reply = new byte[Int(header, 0)];
             header.CopyTo(reply, 0);
             await _stream.ReadExactlyAsync(reply.AsMemory(20));
             return reply;
+        }
+
+        public async Task<byte[]> SendAsync(byte[] frame)
+        {
+            if (Int(frame, 12) == 0) BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(12), Interlocked.Increment(ref _correlation) + 100);
+            await _stream.WriteAsync(frame);
+            return await ReadAsync();
         }
 
         public async ValueTask DisposeAsync()

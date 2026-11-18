@@ -206,8 +206,19 @@ public sealed class Users
         if (profile is null) return (SignOnResult.UnknownUser, null);
         if (profile.Disabled) return (SignOnResult.Disabled, profile);
         if (!PasswordMatches(profile, password)) return (SignOnResult.WrongPassword, profile);
-        return (profile.PasswordExpired ? SignOnResult.PasswordExpired : SignOnResult.SignedOn, profile);
+        if (profile.PasswordExpired) return (SignOnResult.PasswordExpired, profile);
+        NoteSignOn(profile);
+        return (SignOnResult.SignedOn, profile);
     }
+
+    /// <summary>
+    /// Raised when a user signs on, through any server: <see cref="Check"/> raises it, and the servers that check
+    /// a password substitute themselves (or sign on after a password change) call <see cref="NoteSignOn"/>.
+    /// </summary>
+    public event Action<UserProfile>? SignedOn;
+
+    /// <summary>Tells <see cref="SignedOn"/>'s handlers that the user has signed on.</summary>
+    internal void NoteSignOn(UserProfile profile) => SignedOn?.Invoke(profile);
 
     public bool PasswordMatches(UserProfile profile, string password) =>
         PasswordLevel >= 2

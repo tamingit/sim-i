@@ -154,6 +154,7 @@ public sealed class SignOnServer : HostServer
         }
         Interlocked.Increment(ref _signOns);
         Log($"signon #{session.Id} signed on as {user}");
+        Users.NoteSignOn(profile!);
         return (0, user);
     }
 

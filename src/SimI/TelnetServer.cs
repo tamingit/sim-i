@@ -697,6 +697,7 @@ public sealed class TelnetServer : IAsyncDisposable
             }
             changing.ChangePassword(newPassword);
             Log($"password changed for {changing.User}; sign-on by {changing.User}");
+            _users.NoteSignOn(changing);
             session.User = changing.User;
             session.Changing = null;
             return (Screen.Main, "Password changed successfully.");
