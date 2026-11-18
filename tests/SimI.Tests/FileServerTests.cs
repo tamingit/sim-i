@@ -195,6 +195,54 @@ public sealed class FileServerTests : IDisposable
     }
 
     [Fact]
+    public async Task TextInAnotherCcsidIsKeptAsUtf8AndEverythingElseAsSent()
+    {
+        var ifs = NewIfs();
+        Directory.CreateDirectory(ifs.HostPath("/tmp"));
+        System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+        await using var server = await FileServer.StartAsync(ifs);
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+
+        async Task<byte[]> SendAsync(string path, ushort ccsid, byte[] data, ushort option = 4, bool close = true)
+        {
+            var opened = await client.SendAsync(Open(path, access: 2, option: option, ccsid: ccsid));
+            Assert.Equal(0x8002, Short(opened, 18));
+            await client.SendAsync(Write(Int(opened, 22), 0, data));
+            if (close) await client.SendAsync(Close(Int(opened, 22)));
+            return close ? await File.ReadAllBytesAsync(ifs.HostPath(path)) : [];
+        }
+        var utf8 = new UTF8Encoding(false);
+        const string accents = "Café, naïve, 5 €";
+        Assert.Equal(utf8.GetBytes(accents), await SendAsync("/tmp/w1252.csv", 1252, Encoding.GetEncoding(1252).GetBytes(accents)));
+        Assert.Equal(utf8.GetBytes("HELLO, SIM I"), await SendAsync("/tmp/ebcdic.txt", 37, Ebcdic.Encode("HELLO, SIM I")));
+        Assert.Equal(utf8.GetBytes(accents), await SendAsync("/tmp/wide.txt", 1200, [0xFE, 0xFF, .. Encoding.BigEndianUnicode.GetBytes(accents)]));
+        // Latin-1 has no euro sign.
+        Assert.Equal(utf8.GetBytes("Café, naïve, £5"), await SendAsync("/tmp/latin1.txt", 819, Encoding.Latin1.GetBytes("Café, naïve, £5")));
+
+        // Kept as sent: UTF-8 already, binary, a CCSID it doesn't know, and a file added to rather than made.
+        Assert.Equal(utf8.GetBytes(accents), await SendAsync("/tmp/utf8.txt", 1208, utf8.GetBytes(accents)));
+        byte[] binary = [0x50, 0x4B, 0x03, 0x04, 0x00, 0xE9, 0x80];
+        Assert.Equal(binary, await SendAsync("/tmp/archive.zip", 1252, binary));
+        Assert.Equal(binary, await SendAsync("/tmp/odd.bin", 65535, binary));
+        byte[] latin = Encoding.Latin1.GetBytes("é");
+        Assert.Equal(latin, await SendAsync("/tmp/other.txt", 500, latin));
+        await File.WriteAllBytesAsync(ifs.HostPath("/tmp/existing.txt"), latin);
+        Assert.Equal(latin, await SendAsync("/tmp/existing.txt", 1252, latin, option: 1));
+
+        // A file still open when the client goes is converted too.
+        await SendAsync("/tmp/left-open.txt", 1252, Encoding.GetEncoding(1252).GetBytes(accents), close: false);
+        await client.DisposeAsync();
+        await WaitForAsync(async () => (await File.ReadAllBytesAsync(ifs.HostPath("/tmp/left-open.txt"))).SequenceEqual(utf8.GetBytes(accents)));
+    }
+
+    private static async Task WaitForAsync(Func<Task<bool>> done)
+    {
+        for (var i = 0; i < 100 && !await done(); i++) await Task.Delay(50);
+        Assert.True(await done());
+    }
+
+    [Fact]
     public async Task FoldersAreMadeAndDeletedAndNamesChange()
     {
         var ifs = NewIfs();
@@ -301,7 +349,7 @@ public sealed class FileServerTests : IDisposable
         return frame;
     }
 
-    private static byte[] Open(string path, ushort access = 1, ushort option = 8)
+    private static byte[] Open(string path, ushort access = 1, ushort option = 8, ushort ccsid = 0)
     {
         var name = Encoding.BigEndianUnicode.GetBytes(path);
         var template = new byte[44];
@@ -309,6 +357,7 @@ public sealed class FileServerTests : IDisposable
         BinaryPrimitives.WriteInt32BigEndian(template.AsSpan(4), 1);
         BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(10), access);
         BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(16), option);
+        BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(8), ccsid);
         BinaryPrimitives.WriteUInt16BigEndian(template.AsSpan(26), 1);
         var tail = new byte[6 + name.Length];
         BinaryPrimitives.WriteInt32BigEndian(tail, tail.Length);
