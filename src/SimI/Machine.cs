@@ -475,15 +475,44 @@ public sealed partial class Machine : IDisposable
         }
         var o = Store.FindObject(library, name, "*PGM", DefaultLibrary(host.User))
             ?? throw new RpgHalt($"Program {name} in library {library ?? "*LIBL"} not found.", "CPF0001");
-        if (o.Kind == "CLLE")
+        var state = host.State;
+        var label = $"{o.Library}/{o.Name}";
+        Profiler? started = null;
+        var mark = 0;
+        if (state.Profiler is null)
+            state.Profiler = started = new Profiler(new Profile(Profiles.NextId(), label, host.User, $"{state.Number}/{host.User}/{state.Name}"));
+        else mark = state.Profiler.Enter("program", label);
+        string? failure = "ended abnormally";
+        try
         {
-            var cached = _clPrograms.GetValueOrDefault((o.Library, o.Name));
-            if (cached.Version != o.Version) _clPrograms[(o.Library, o.Name)] = cached = (o.Version, Cl.ClProgram.Parse(o.Source));
-            cached.Program.Call(name, arguments, this, host, depth);
-            return;
+            if (o.Kind == "CLLE")
+            {
+                var cached = _clPrograms.GetValueOrDefault((o.Library, o.Name));
+                if (cached.Version != o.Version) _clPrograms[(o.Library, o.Name)] = cached = (o.Version, Cl.ClProgram.Parse(o.Source));
+                cached.Program.Call(name, arguments, this, host, depth);
+            }
+            else new Interpreter(Parsed(o), name, this, host, depth, o.Library).Run(arguments);
+            failure = null;
         }
-        new Interpreter(Parsed(o), name, this, host, depth, o.Library).Run(arguments);
+        catch (RpgHalt halt)
+        {
+            failure = halt.MessageId is { } id ? $"{id} {halt.Message}" : halt.Message;
+            throw;
+        }
+        finally
+        {
+            if (started is not null)
+            {
+                state.Profiler = null;
+                started.Finish(failure);
+                Profiles.Add(started.Profile);
+            }
+            else state.Profiler?.Leave(mark);
+        }
     }
+
+    /// <summary>The last top-level program calls' profiles, for the flame graph page.</summary>
+    public ProfileStore Profiles { get; } = new();
 
     /// <summary>
     /// The service program, activated in the job, that exports the procedure: one in the binding

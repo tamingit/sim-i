@@ -535,9 +535,33 @@ internal sealed partial class Interpreter
     /// <summary>The TAG a GOTO is going to.</summary>
     private string _gotoLabel = "";
 
+    /// <summary>Until disposed, the job's profile charges the time to this (when a profile is being recorded).</summary>
+    private ProfileScope Profiled(string kind, string name) =>
+        _host.State.Profiler is { } profiler ? new ProfileScope(profiler, profiler.Enter(kind, name)) : default;
+
+    private readonly struct ProfileScope(Profiler? profiler, int depth) : IDisposable
+    {
+        public void Dispose() => profiler?.Leave(depth);
+    }
+
+    /// <summary>What a flame graph calls an SQL statement: its text as translated (parameter markers, never values), cut short.</summary>
+    private static string SqlLabel(SqlTranslation sql)
+    {
+        var text = sql.Sql is { } t ? string.Join(' ', t.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)) : sql.Kind.ToString();
+        if (sql.Cursor is { } cursor && sql.Sql is null) text += " " + cursor;
+        return text.Length > 120 ? text[..117] + "..." : text;
+    }
+
+    /// <summary>A record operation's kind of bar: a database file's, a printer's, or the display's (time waiting for the user).</summary>
+    private string DisplayKind(DisplayStmt statement) =>
+        DiskFor(statement.Record) is not null && !(statement.Op == "READ" && _displays.Any(d => d.File.Name == statement.Record)) ? "file"
+        : statement.Op == "WRITE" && _printers.Values.Any(p => p.File.Records.ContainsKey(statement.Record)) ? "print"
+        : "display";
+
     private Signal Execute(Stmt statement, Frame frame)
     {
         _line = statement.Line;
+        _host.State.Profiler?.Line(statement.Line);
         if (_machine.Debugger.Active) _machine.Debugger.Statement(this, frame, statement.Line);
         if ((++_statements & 0x3ff) == 0)
         {
@@ -613,6 +637,7 @@ internal sealed partial class Interpreter
             {
                 if (!frame.Procedure.Subroutines.TryGetValue(exsr.Name, out var body) && !_program.Main.Subroutines.TryGetValue(exsr.Name, out body))
                     throw new RpgError(100, $"the subroutine {exsr.Name} isn't defined");
+                using var profiled = Profiled("subroutine", exsr.Name);
                 var signal = Execute(body, frame);
                 return signal == Signal.Return ? signal : Signal.None;
             }
@@ -620,7 +645,7 @@ internal sealed partial class Interpreter
                 Call((CallExpr)call.Call, frame, statement: true);
                 return Signal.None;
             case DsplyStmt dsply:
-                Dsply(dsply, frame);
+                using (Profiled("display", "DSPLY")) Dsply(dsply, frame);
                 return Signal.None;
             case ClearStmt clear:
                 if (clear.Target is NameExpr record && Find(record.Name, frame) is null && _displays.Any(d => d.ClearRecord(record.Name))) return Signal.None;
@@ -669,16 +694,16 @@ internal sealed partial class Interpreter
                 return Signal.None;
             }
             case SqlStmt sql:
-                ExecuteSql(sql.Sql, frame);
+                using (Profiled("sql", SqlLabel(sql.Sql))) ExecuteSql(sql.Sql, frame);
                 return Signal.None;
             case PrintStmt print:
-                Print(print, frame);
+                using (Profiled("print", print.File)) Print(print, frame);
                 return Signal.None;
             case DisplayStmt display:
-                Display(display, frame);
+                using (Profiled(DisplayKind(display), $"{display.Op} {display.Record}")) Display(display, frame);
                 return Signal.None;
             case FileStmt file:
-                FileOperation(file);
+                using (Profiled("file", $"{file.Op} {file.File}")) FileOperation(file);
                 return Signal.None;
             case GotoStmt jump:
                 _gotoLabel = jump.Label;
@@ -1128,7 +1153,7 @@ internal sealed partial class Interpreter
         (target._host, target._depth) = (_host, _depth);
         try
         {
-            return target.Invoke(procedure, cells, arguments.Count, copyBack);
+            return target.Invoke(procedure, cells, arguments.Count, copyBack, bound: true);
         }
         finally
         {
@@ -1159,7 +1184,7 @@ internal sealed partial class Interpreter
         (_host, _depth) = (host, depth);
         try
         {
-            var result = Invoke(procedure, cells, arguments.Count, []);
+            var result = Invoke(procedure, cells, arguments.Count, [], bound: true);
             foreach (var (target, passed) in copyBack)
                 target.Set(target.Type.IsNumeric == passed.Type.IsNumeric ? passed.Get() : target.Type.IsNumeric ? Values.ParseNumber(Values.ToText(passed.Get())) : Values.ToText(passed.Get()));
             return result;
@@ -1238,8 +1263,10 @@ internal sealed partial class Interpreter
     /// <summary>The arguments of the call being bound that are *OMIT, for the procedure it calls.</summary>
     private readonly HashSet<int> _omitting = [];
 
-    private object? Invoke(Procedure procedure, List<Cell> cells, int count, List<(Cell Target, Cell Passed)> copyBack)
+    /// <param name="bound">Whether it was called from another program: a service program's procedure.</param>
+    private object? Invoke(Procedure procedure, List<Cell> cells, int count, List<(Cell Target, Cell Passed)> copyBack, bool bound = false)
     {
+        using var profiled = Profiled("procedure", bound ? $"{procedure.Name} ({_library}/{_name})" : procedure.Name);
         if (++_calls > DepthLimit)
         {
             _calls--;

@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim i Profiles</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #5d6577; --line: #dde1e8; --accent: #2457c5;
+    --error: #c62f2f; --select: #dbe6ff;
+    --k-program: #8fb3f0; --k-procedure: #7fcfc4; --k-subroutine: #c3a9ea; --k-line: #d4d8e0; --k-sql: #f4b06b;
+    --k-file: #e8cf6f; --k-display: #8fd69f; --k-print: #f0a5c4; --k-command: #a9b4f5; --bar-ink: #1d2330;
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1a1e26; --ink: #e5e8ef; --muted: #9aa3b5; --line: #2c3240; --accent: #6f9bff;
+      --error: #ff7a7a; --select: #263a66;
+      --k-program: #3d5f9c; --k-procedure: #2f7a70; --k-subroutine: #6a4f96; --k-line: #3a404c; --k-sql: #a3632a;
+      --k-file: #8c7a2a; --k-display: #2f7c45; --k-print: #94506d; --k-command: #4d58a3; --bar-ink: #eef1f6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 var(--sans); }
+  button, input { font: inherit; color: inherit; }
+  button { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, a:focus-visible, tr:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  a { color: var(--accent); }
+  .hidden { display: none !important; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; height: calc(100% - 50px); }
+  aside { border-right: 1px solid var(--line); overflow: auto; background: var(--panel); }
+  aside .tools { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 10px; border-top: 1px solid var(--line); font-size: 13px; white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  #runs tbody tr { cursor: pointer; }
+  #runs tbody tr:hover { background: var(--bg); }
+  #runs tbody tr.selected { background: var(--select); }
+  .failed { color: var(--error); }
+  .sub { color: var(--muted); font-size: 12px; }
+  section { overflow: auto; padding: 14px 16px; min-width: 0; }
+  .empty { color: var(--muted); padding: 24px 12px; }
+  .summary { display: flex; gap: 18px; flex-wrap: wrap; align-items: baseline; margin-bottom: 10px; }
+  .summary h2 { margin: 0; font-size: 17px; font-family: var(--mono); }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .crumbs { font-size: 13px; color: var(--muted); margin-bottom: 6px; min-height: 1.4em; }
+  .crumbs button { padding: 0 6px; border: 0; background: none; color: var(--accent); }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 6px 0 10px; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; background: var(--c); }
+  #graph { position: relative; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); overflow: hidden; }
+  .bar { position: absolute; height: 20px; padding: 0 4px; border: 1px solid var(--panel); border-radius: 3px; font: 12px/18px var(--mono);
+         color: var(--bar-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .bar:hover { filter: brightness(1.08); outline: 1px solid var(--ink); }
+  #tip { position: fixed; z-index: 10; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+         box-shadow: 0 4px 16px rgb(0 0 0 / .18); font-size: 12px; max-width: 520px; }
+  #tip b { font-family: var(--mono); word-break: break-all; }
+  h3 { font-size: 14px; margin: 18px 0 6px; }
+  #hot td:first-child { font-family: var(--mono); white-space: normal; word-break: break-word; }
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; height: auto; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 40vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Program profiles</h1>
+  <a href="/">Source editor</a>
+</header>
+<main>
+  <aside>
+    <div class="tools"><span>The last 30 program calls</span><button id="refresh">Refresh</button></div>
+    <div id="signedOff" class="empty hidden">Sign on in the <a href="/">source editor</a> first.</div>
+    <div id="noRuns" class="empty hidden">No programs have run yet. Call one from a 5250 session and refresh.</div>
+    <table id="runs" class="hidden">
+      <thead><tr><th>Program</th><th>Started</th><th class="num">Time</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </aside>
+  <section>
+    <div id="pick" class="empty">Pick a run to see where its time went.</div>
+    <div id="detail" class="hidden">
+      <div class="summary">
+        <h2 id="title"></h2>
+        <span id="facts" class="sub"></span>
+      </div>
+      <div class="controls">
+        <label><input type="checkbox" id="lines" checked> Source lines</label>
+        <button id="reset">Zoom out</button>
+        <a id="folded" href="#" download>Download folded stacks</a>
+        <span class="sub">for speedscope or flamegraph.pl</span>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="crumbs" id="crumbs"></div>
+      <div id="graph"></div>
+      <h3>Where the time went</h3>
+      <div class="sub">Time spent in each, not counting what it called.</div>
+      <table id="hot"><thead><tr><th>What</th><th class="num">Times</th><th class="num">Self</th><th class="num">Share</th></tr></thead><tbody></tbody></table>
+    </div>
+  </section>
+</main>
+<div id="tip" class="hidden"></div>
+<script>
+"use strict";
+const kinds = {
+  program: "Program", procedure: "Procedure", subroutine: "Subroutine", line: "Source line", sql: "SQL",
+  file: "Database file", display: "Display (waiting for the user)", print: "Printer file", command: "CL command",
+};
+const $ = (id) => document.getElementById(id);
+let profile = null;  // { summary, root }
+let zoom = [];       // the path of nodes from the root to the one shown full width
+
+async function get(url) {
+  const response = await fetch(url, { headers: { "X-Sim-i": "1" } });
+  if (response.status === 401) { $("signedOff").classList.remove("hidden"); throw new Error("signed off"); }
+  if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? `${url} failed (${response.status})`);
+  return response.json();
+}
+
+const ms = (n) => n >= 1000 ? `${(n / 1000).toFixed(2)} s` : n >= 10 ? `${n.toFixed(0)} ms` : `${n.toFixed(2)} ms`;
+const label = (n) => n.kind === "line" ? `line ${n.name}` : n.name;
+const time = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+async function loadRuns() {
+  const runs = await get("/api/profiles");
+  $("signedOff").classList.add("hidden");
+  $("noRuns").classList.toggle("hidden", runs.length > 0);
+  $("runs").classList.toggle("hidden", runs.length === 0);
+  const body = $("runs").tBodies[0];
+  body.replaceChildren(...runs.map((r) => {
+    const row = document.createElement("tr");
+    row.tabIndex = 0;
+    row.dataset.id = r.id;
+    if (profile?.summary.id === r.id) row.classList.add("selected");
+    const name = document.createElement("td");
+    name.textContent = r.program;
+    if (r.failure) { name.classList.add("failed"); name.title = r.failure; }
+    const who = document.createElement("div");
+    who.className = "sub";
+    who.textContent = r.job;
+    name.append(who);
+    const started = document.createElement("td");
+    started.textContent = time(r.started);
+    const took = document.createElement("td");
+    took.className = "num";
+    took.textContent = ms(r.milliseconds);
+    row.append(name, started, took);
+    const open = () => openRun(r.id);
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    return row;
+  }));
+}
+
+async function openRun(id) {
+  profile = await get(`/api/profiles/${id}`);
+  zoom = [];
+  for (const row of $("runs").tBodies[0].rows) row.classList.toggle("selected", Number(row.dataset.id) === id);
+  const s = profile.summary;
+  $("pick").classList.add("hidden");
+  $("detail").classList.remove("hidden");
+  $("title").textContent = s.program;
+  $("facts").textContent = `${ms(s.milliseconds)} · job ${s.job} · ${new Date(s.started).toLocaleString()}` + (s.failure ? ` · ended in error: ${s.failure}` : "");
+  $("facts").classList.toggle("failed", !!s.failure);
+  $("folded").href = `/api/profiles/${id}/folded`;
+  draw();
+}
+
+/** The tree without line bars: each line's children move up to its parent, merged with the same bar from other lines. */
+function withoutLines(node) {
+  const merged = new Map();
+  let self = node.self;
+  const add = (child) => {
+    const key = `${child.kind}\u0000${child.name}`;
+    const have = merged.get(key);
+    if (!have) { merged.set(key, { ...child, children: [...child.children] }); return; }
+    have.self += child.self; have.total += child.total; have.count += child.count; have.children.push(...child.children);
+  };
+  for (const child of node.children) {
+    if (child.kind === "line") { self += child.self; for (const c of child.children) add(c); }
+    else add(child);
+  }
+  return { ...node, self, children: [...merged.values()].map(withoutLines) };
+}
+
+function shownTree() {
+  return $("lines").checked ? profile.root : withoutLines(profile.root);
+}
+
+/** Follows the zoom path (by kind and name) in the tree shown, as far as it still matches. */
+function zoomed(root) {
+  let node = root;
+  const path = [root];
+  for (const step of zoom) {
+    const next = node.children.find((c) => c.kind === step.kind && c.name === step.name);
+    if (!next) break;
+    path.push(next);
+    node = next;
+  }
+  return path;
+}
+
+function draw() {
+  const root = shownTree();
+  const path = zoomed(root);
+  const top = path[path.length - 1];
+  const graph = $("graph");
+  const width = graph.clientWidth || 800;
+  const bars = [];
+  const rowHeight = 22;
+  let depth = 0;
+  // The path above the node zoomed into, full width.
+  // Each bar keeps its steps from the root, which become the zoom when it's clicked.
+  const steps = path.slice(1).map((n) => ({ kind: n.kind, name: n.name }));
+  path.slice(0, -1).forEach((n, i) => bars.push({ node: n, x: 0, w: 1, row: i, steps: steps.slice(0, i), ancestor: true }));
+  const base = path.length - 1;
+  function place(node, x, w, row, here) {
+    bars.push({ node, x, w, row, steps: here });
+    depth = Math.max(depth, row);
+    let at = x;
+    const total = node.total || 1;
+    for (const child of [...node.children].sort((a, b) => b.total - a.total)) {
+      const cw = w * (child.total / total);
+      if (cw * width >= 1.5) place(child, at, cw, row + 1, [...here, { kind: child.kind, name: child.name }]);
+      at += cw;
+    }
+  }
+  place(top, 0, 1, base, steps);
+  graph.style.height = `${(Math.max(depth, base) + 1) * rowHeight + 4}px`;
+  const all = root.total || 1;
+  graph.replaceChildren(...bars.map((b) => {
+    const el = document.createElement("div");
+    el.className = "bar";
+    el.style.left = `${b.x * 100}%`;
+    el.style.width = `calc(${b.w * 100}% - 1px)`;
+    el.style.top = `${b.row * rowHeight + 2}px`;
+    el.style.background = `var(--k-${b.node.kind}, var(--k-line))`;
+    if (b.ancestor) el.style.opacity = ".6";
+    el.textContent = label(b.node);
+    el.addEventListener("mousemove", (e) => tip(e, b.node, all));
+    el.addEventListener("mouseleave", () => $("tip").classList.add("hidden"));
+    el.addEventListener("click", () => { zoom = b.steps; $("tip").classList.add("hidden"); draw(); });
+    return el;
+  }));
+  // Crumbs: the zoom path, each one a way back up.
+  const crumbs = $("crumbs");
+  crumbs.replaceChildren();
+  if (path.length > 1) {
+    path.forEach((n, i) => {
+      const button = document.createElement("button");
+      button.textContent = label(n);
+      button.addEventListener("click", () => { zoom = zoom.slice(0, i); draw(); });
+      if (i > 0) crumbs.append(" › ");
+      crumbs.append(button);
+    });
+  }
+  $("reset").disabled = path.length === 1;
+  hot(root);
+}
+
+function tip(e, node, all) {
+  const t = $("tip");
+  const pct = (n) => `${((100 * n) / all).toFixed(1)}%`;
+  t.innerHTML = "";
+  const name = document.createElement("b");
+  name.textContent = label(node);
+  const lines = [
+    kinds[node.kind] ?? node.kind,
+    `Total ${ms(node.total)} (${pct(node.total)} of the run)`,
+    `Self ${ms(node.self)} (${pct(node.self)})`,
+    `Entered ${node.count.toLocaleString()} time${node.count === 1 ? "" : "s"}`,
+  ];
+  t.append(name, ...lines.map((l) => { const d = document.createElement("div"); d.textContent = l; return d; }));
+  t.classList.remove("hidden");
+  const x = Math.min(e.clientX + 14, window.innerWidth - t.offsetWidth - 8);
+  const y = e.clientY + 18 + t.offsetHeight > window.innerHeight ? e.clientY - t.offsetHeight - 10 : e.clientY + 18;
+  t.style.left = `${Math.max(8, x)}px`;
+  t.style.top = `${y}px`;
+}
+
+/** The table of self time: lines named with what they're in, everything else by its name. */
+function hot(root) {
+  const totals = new Map();
+  const walk = (node, frame) => {
+    const where = node.kind === "line" ? `${frame} line ${node.name}` : `${kinds[node.kind] ?? node.kind}: ${node.name}`;
+    const here = node.kind === "line" ? frame : ["program", "procedure", "subroutine"].includes(node.kind) ? node.name : frame;
+    const have = totals.get(where) ?? { self: 0, count: 0 };
+    have.self += node.self;
+    have.count += node.count;
+    totals.set(where, have);
+    for (const child of node.children) walk(child, here);
+  };
+  walk(root, root.name);
+  const all = root.total || 1;
+  const rows = [...totals].filter(([, v]) => v.self > 0).sort((a, b) => b[1].self - a[1].self).slice(0, 20);
+  $("hot").tBodies[0].replaceChildren(...rows.map(([what, v]) => {
+    const row = document.createElement("tr");
+    for (const [text, num] of [[what, false], [v.count.toLocaleString(), true], [ms(v.self), true], [`${((100 * v.self) / all).toFixed(1)}%`, true]]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      if (num) cell.className = "num";
+      row.append(cell);
+    }
+    return row;
+  }));
+}
+
+$("legend").replaceChildren(...Object.entries(kinds).map(([k, text]) => {
+  const span = document.createElement("span");
+  span.style.setProperty("--c", `var(--k-${k})`);
+  span.textContent = text;
+  return span;
+}));
+$("refresh").addEventListener("click", () => loadRuns().catch(() => {}));
+$("lines").addEventListener("change", () => { if (profile) draw(); });
+$("reset").addEventListener("click", () => { zoom = []; draw(); });
+window.addEventListener("resize", () => { if (profile) draw(); });
+loadRuns().catch(() => {});
+</script>
+</body>
+</html>

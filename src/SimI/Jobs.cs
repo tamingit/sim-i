@@ -56,6 +56,9 @@ internal sealed class JobState(string name = "QPADEV0001", bool wide = false)
     /// <summary>Service programs activated in the job, which keep their global variables between calls.</summary>
     internal Dictionary<(string Library, string Name), (long Version, Rpg.Interpreter Program)> ServicePrograms { get; } = [];
 
+    /// <summary>Records where the job's top-level program call spends its time, while one runs.</summary>
+    internal Profiler? Profiler { get; set; }
+
     /// <summary>The identity value of the job's last INSERT, as IDENTITY_VAL_LOCAL() returns it.</summary>
     public long LastIdentity { get; set; }
 

@@ -127,6 +127,7 @@ public sealed class WebServer : IAsyncDisposable
             await page.CopyToAsync(context.Response.Body);
         });
         MapReceive(log, machine);
+        MapProfiles(machine);
 
         _app.MapPost("/api/signon", async context =>
         {
@@ -619,4 +620,64 @@ public sealed class WebServer : IAsyncDisposable
     private sealed record SignOnRequest(string? User, string? Password);
 
     private sealed record SaveRequest(string? Library, string? File, string? Name, string? Type, string? Source);
+
+    // ---- profiles (the flame graph page) ----
+
+    private void MapProfiles(Machine machine)
+    {
+        _app.MapGet("/profile", async context =>
+        {
+            context.Response.ContentType = "text/html; charset=utf-8";
+            context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:";
+            await using var page = typeof(WebServer).Assembly.GetManifestResourceStream("Web/profile.html")!;
+            await page.CopyToAsync(context.Response.Body);
+        });
+
+        static object Summary(Profile p) => new
+        {
+            id = p.Id,
+            program = p.Program,
+            user = p.User,
+            job = p.Job,
+            started = p.Started,
+            milliseconds = Profile.Milliseconds(p.Elapsed),
+            failure = p.Failure,
+        };
+
+        static object Tree(ProfileNode n) => new
+        {
+            kind = n.Kind,
+            name = n.Name,
+            count = n.Count,
+            self = Profile.Milliseconds(n.Self),
+            total = Profile.Milliseconds(n.Total),
+            children = n.Children.Select(Tree),
+        };
+
+        _app.MapGet("/api/profiles", Authorized((context, _) =>
+            context.Response.WriteAsJsonAsync(machine.Profiles.All.Select(Summary))));
+
+        _app.MapGet("/api/profiles/{id:int}", Authorized(async (context, _) =>
+        {
+            if (machine.Profiles.Find(int.Parse((string)context.Request.RouteValues["id"]!, System.Globalization.CultureInfo.InvariantCulture)) is not { } profile)
+            {
+                context.Response.StatusCode = 404;
+                await context.Response.WriteAsJsonAsync(new { message = "That run isn't kept any more." });
+                return;
+            }
+            await context.Response.WriteAsJsonAsync(new { summary = Summary(profile), root = Tree(profile.Root) });
+        }));
+
+        _app.MapGet("/api/profiles/{id:int}/folded", Authorized(async (context, _) =>
+        {
+            if (machine.Profiles.Find(int.Parse((string)context.Request.RouteValues["id"]!, System.Globalization.CultureInfo.InvariantCulture)) is not { } profile)
+            {
+                context.Response.StatusCode = 404;
+                return;
+            }
+            context.Response.ContentType = "text/plain; charset=utf-8";
+            context.Response.Headers.ContentDisposition = $"attachment; filename=\"{profile.Program.Replace('/', '-')}-{profile.Id}.folded.txt\"";
+            await context.Response.WriteAsync(profile.Folded());
+        }));
+    }
 }

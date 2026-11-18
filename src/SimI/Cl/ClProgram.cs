@@ -578,6 +578,7 @@ internal sealed partial class ClProgram
     {
         if (node is null) return Flow.Next;
         run.Line = node.Line;
+        if (node is not Block && node.Line > 0) run.Host.State.Profiler?.Line(node.Line);
         run.Host.Cancelled.ThrowIfCancellationRequested();
         switch (node)
         {
@@ -608,17 +609,27 @@ internal sealed partial class ClProgram
                 return ContinueFor(loop, variable, run);
             }
             case Command command:
+            {
+                // The command is a bar of the profile; a MONITOR's EXEC runs after it, on its own line.
+                var profiler = run.Host.State.Profiler;
+                var mark = profiler?.Enter("command", command.Parsed.Name) ?? 0;
                 try
                 {
                     return RunCommand(command, run);
                 }
                 catch (ClEscape e)
                 {
+                    profiler?.Leave(mark);
                     var monitor = command.Monitors.Concat(_global).FirstOrDefault(m => m.Ids.Any(id => Matches(id, e.MessageId)));
                     if (monitor is null) throw;
                     run.Caught.Add((e.MessageId, e.Message));
                     return Execute(monitor.Exec, run);
                 }
+                finally
+                {
+                    profiler?.Leave(mark);
+                }
+            }
             default:
                 return Flow.Next;
         }
