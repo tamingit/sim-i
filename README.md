@@ -8,6 +8,71 @@ It was split out of [GreenGlow Connect](https://github.com/tamingit/greenglow), 
 
 **Status:** it serves the clients it was written for. The next goal is enough fidelity that IBM i Access Client Solutions (ACS) can connect to it and behave as it does with a real IBM i.
 
+## Quickstart
+
+You need Docker with the compose plugin. Sim i runs in one container and PostgreSQL, where it keeps every library, in another. Your source stays in a folder on your machine.
+
+**1. Lay out your source.** The folder you give Sim i holds a folder for each library, and each of those a folder for each source file (or the members straight in it):
+
+```
+/home/you/work/erp/source/
+  DEMOLIB/
+    QRPGLESRC/invoice.rpgle      member INVOICE of DEMOLIB/QRPGLESRC
+    QDDSSRC/custlistd.dspf
+    QSQLSRC/tables.sql
+```
+
+No source yet? Use `examples/customers` from this repository.
+
+**2. Point Sim i at it.** Put a `compose.override.yaml` beside `compose.yaml` (compose reads it by itself, so `compose.yaml` stays as it is):
+
+```yaml
+services:
+  sim-i:
+    environment:
+      SIM_I_SOURCE_DIR: /source
+    volumes:
+      - /home/you/work/erp/source:/source:ro   # or ./examples/customers:/source:ro
+```
+
+The left side is the path on your machine. The container runs as a non-root user, so the files must be readable by everyone (a normal checkout is).
+
+**3. Start it.**
+
+```bash
+docker compose up --build
+```
+
+This builds the image, starts PostgreSQL 17, waits until it's ready, then starts Sim i, which makes a library for each library folder and saves, checks and creates each member. Members with errors are listed in the log and don't stop it.
+
+**4. Use it.**
+
+- **Web editor:** <http://localhost:8080/>, signing on as `PRTUSER` / `Secret12`.
+- **5250:** any TN5250 client on `localhost` port 2323. With `examples/customers`, enter `CALL DEMOLIB/CUSTMNT`.
+- **VS Code:** the debug server is on port 4711 (the extension is in `vscode/sim-i`).
+
+Change a member on your machine and restart (`docker compose restart sim-i`): only what changed is made again. The database, the IFS and the TLS certificate are kept in named volumes; `docker compose down -v` throws them away and starts clean.
+
+**Without compose**, the same with plain `docker`:
+
+```bash
+docker network create sim-i
+docker run -d --name sim-i-db --network sim-i -v sim-i-db:/var/lib/postgresql/data \
+  -e POSTGRES_USER=simi -e POSTGRES_PASSWORD=simi -e POSTGRES_DB=simi postgres:17
+until docker exec sim-i-db pg_isready -U simi -d simi; do sleep 1; done
+
+docker build -t sim-i .
+docker run --rm --name sim-i --network sim-i \
+  -e SIM_I_DATABASE="Host=sim-i-db;Database=simi;Username=simi;Password=simi" \
+  -e SIM_I_SOURCE_DIR=/source -v /home/you/work/erp/source:/source:ro \
+  -v sim-i-ifs:/ifs -v sim-i-certs:/certs \
+  -p 127.0.0.1:2323:2323 -p 127.0.0.1:8080:8080 -p 127.0.0.1:4711:4711 \
+  -p 127.0.0.1:449:449 -p 127.0.0.1:8473:8473 -p 127.0.0.1:8474:8474 -p 127.0.0.1:8475:8475 -p 127.0.0.1:8476:8476 \
+  sim-i
+```
+
+[docs/getting-started.md](docs/getting-started.md) goes on from here: checking source without starting anything, copying data from a real IBM i, and debugging in VS Code. [Running it](#running-it) has every option.
+
 ## What it does
 
 **5250 display (Telnet, port 2323)**
@@ -138,7 +203,7 @@ As on an IBM i, TLS is a second port for the same server: Telnet on 992, sign-on
 
 ## Running it
 
-`docker compose up --build` runs Sim i with every server, the web editor on port 8080, and the PostgreSQL it keeps everything in (see `compose.yaml`).
+`docker compose up --build` runs Sim i with every server, the web editor on port 8080, and the PostgreSQL it keeps everything in (see `compose.yaml`, and the [Quickstart](#quickstart) for loading your source).
 
 New here? [docs/getting-started.md](docs/getting-started.md) walks through loading your source, copying data from a real IBM i, and debugging in VS Code.
 
@@ -149,7 +214,7 @@ Docker:
 docker run --rm --env-file .env -e SIM_I_DATABASE="Host=db.example;Database=simi;Username=simi;Password=..." -v sim-i-certs:/certs \
   -p 127.0.0.1:2323:2323 -p 127.0.0.1:992:992 -p 127.0.0.1:8474:8474 -p 127.0.0.1:9474:9474 \
   -p 127.0.0.1:8475:8475 -p 127.0.0.1:9475:9475 -p 127.0.0.1:8476:8476 -p 127.0.0.1:9476:9476 \
-  -p 127.0.0.1:449:449 ghcr.io/tamingit/sim-i
+  -p 127.0.0.1:8473:8473 -p 127.0.0.1:9473:9473 -p 127.0.0.1:449:449 ghcr.io/tamingit/sim-i
 ```
 
 - **Ports:** publish each port on the same number: the port mapper tells clients the ports inside the container.
