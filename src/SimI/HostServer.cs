@@ -186,6 +186,7 @@ public abstract class HostServer : IAsyncDisposable
             return null;
         }
         Log($"{LogName} #{id} signed on as {profile!.User}");
+        users.NoteSignOn(profile);
         return profile;
     }
 
