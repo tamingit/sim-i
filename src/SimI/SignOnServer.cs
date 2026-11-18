@@ -41,6 +41,9 @@ public sealed class SignOnServer : HostServer
     private const int PasswordIncorrect = 0x0003000B;
     private const int PasswordExpired = 0x0003000D;
 
+    /// <summary>The profile has PASSWORD(*NONE), so no password signs it on.</summary>
+    private const int PasswordNone = 0x00030010;
+
     private int _signOns;
     private int _refusals;
     private int _passwordChanges;
@@ -191,6 +194,7 @@ public sealed class SignOnServer : HostServer
         if (Refuse is { } refuse) return (refuse, null);
         if (Users.Find(user) is not { } profile) return (UserIdUnknown, null);
         if (profile.Disabled) return (UserIdDisabled, profile);
+        if (profile.HasNoPassword) return (PasswordNone, profile);
         if (request.Length < 21 || request[20] != (session.Level < 2 ? 0x01 : 0x03)) return (RequestDataNotValid, profile);
         if (!points.TryGetValue(0x1105, out var substitute)) return (RequestDataNotValid, profile);
         var token = Passwords.Token(session.Level, profile.User, profile.Password);

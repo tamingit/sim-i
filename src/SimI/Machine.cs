@@ -674,6 +674,8 @@ public sealed partial class Machine : IDisposable
             case "MKDIR" or "MD" or "CRTDIR" or "RMDIR" or "RD" or "RMVLNK" or "DEL" or "ERASE" or "CHGCURDIR" or "CD" or "CHDIR"
                 or "CPYTOSTMF" or "CPYFRMSTMF" or "CPY" or "COPY":
                 return RunIfs(command, host);
+            case "CRTUSRPRF" or "CHGUSRPRF" or "DLTUSRPRF" or "DSPUSRPRF":
+                return RunUserProfile(command);
             case "CRTLIB":
             {
                 if (command.Value("LIB", 0)?.ToUpperInvariant() is not { } library) return new CommandResult(false, "Parameter LIB required.");
@@ -1321,9 +1323,20 @@ public sealed partial class Machine : IDisposable
 
     // ---- Sim i's own programs ----
 
+    /// <summary>SHA-256 of the system source earlier versions of Sim i shipped (USRMNT before group profiles).</summary>
+    private static readonly HashSet<string> Superseded =
+    [
+        "37a0085d15f9dac2788719905f1e84e1c790cf9cb4122b06e2ea5a7c52816ec0", // usrmnt.sqlrpgle
+        "564d6f9a860c8d72c190ae13c5cb9697a07c1e3d08f04eeddf21e1799f92a595", // usrmntd.dspf
+    ];
+
+    private static string Hash(string source) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source.Replace("\r\n", "\n"))));
+
     /// <summary>
     /// Puts Sim i's own programs in QGPL: USRMNT, the user maintenance System Options runs, and its
-    /// display file. A member that's there already is left as it is, so it can be changed or kept.
+    /// display file. A member that's there already is left as it is, so it can be changed or kept, unless it is
+    /// still exactly as an earlier Sim i shipped it: that one is replaced.
     /// Returns what it made.
     /// </summary>
     public IReadOnlyList<Member> InstallSystemSource(Action<string>? log = null)
@@ -1338,9 +1351,13 @@ public sealed partial class Machine : IDisposable
         {
             var type = TypeForExtension(Path.GetExtension(file))!;
             var name = Path.GetFileNameWithoutExtension(file).ToUpperInvariant();
-            if (Store.FindMember(CurrentLibrary, DefaultFile(type), name) is not null) continue;
             using var reader = new StreamReader(assembly.GetManifestResourceStream(resource)!);
-            var member = new Member(CurrentLibrary, DefaultFile(type), name, type, reader.ReadToEnd().Replace("\r\n", "\n"));
+            var source = reader.ReadToEnd().Replace("\r\n", "\n");
+            // A copy someone changed is kept; one still as an earlier Sim i shipped it is brought up to date.
+            if (Store.FindMember(CurrentLibrary, DefaultFile(type), name) is { } existing
+                && (existing.Source == source || !Superseded.Contains(Hash(existing.Source))))
+                continue;
+            var member = new Member(CurrentLibrary, DefaultFile(type), name, type, source);
             Save(member);
             var result = Compile(member);
             log?.Invoke($"source: {member} {member.Type}: {result.Message}");

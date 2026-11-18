@@ -172,6 +172,7 @@ public abstract class HostServer : IAsyncDisposable
         if (refuse is { } refused) rc = refused;
         else if (profile is null) rc = 0x00020001;
         else if (profile.Disabled) rc = 0x00020002;
+        else if (profile.HasNoPassword) rc = 0x00030010;
         else if (scheme != (level < 2 ? 0x01 : 0x03)) rc = 0x00010009;
         else if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(substitute,
                      Passwords.Substitute(level, Passwords.Token(level, profile.User, profile.Password), profile.User, clientSeed, serverSeed, 1)))
