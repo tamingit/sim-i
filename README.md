@@ -71,7 +71,7 @@ docker run --rm --name sim-i --network sim-i \
   sim-i
 ```
 
-[docs/getting-started.md](docs/getting-started.md) goes on from here: checking source without starting anything, copying data from a real IBM i, and debugging in VS Code. [Running it](#running-it) has every option.
+[docs/getting-started.md](docs/getting-started.md) goes on from here: checking source without starting anything, copying data from a real IBM i, and debugging in VS Code. [Running it](#running-it) has every option, and [a compose file for deploying the published image](#deploying-the-published-image-with-compose) on a server.
 
 ## What it does
 
@@ -207,6 +207,110 @@ As on an IBM i, TLS is a second port for the same server: Telnet on 992, sign-on
 
 New here? [docs/getting-started.md](docs/getting-started.md) walks through loading your source, copying data from a real IBM i, and debugging in VS Code.
 
+### Deploying the published image with compose
+
+The repository's `compose.yaml` builds Sim i from source. To run it on a server instead, use the image from GitHub's registry (see [Releases](#releases) for its tags): no checkout and no .NET SDK, only Docker with the compose plugin. Make a folder for it, with this `compose.yml` in it:
+
+```yaml
+# Sim i from ghcr.io, with its PostgreSQL.   docker compose up -d
+# The values in ${...} come from the .env file beside this one.
+name: sim-i
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: simi
+      POSTGRES_PASSWORD: ${SIM_I_DB_PASSWORD:?set SIM_I_DB_PASSWORD in .env}
+      POSTGRES_DB: simi
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U simi -d simi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # No ports: only Sim i reaches the database, over compose's own network.
+
+  sim-i:
+    image: ghcr.io/tamingit/sim-i:${SIM_I_TAG:-prod}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env   # the users, SIM_I_TLS_NAMES and SIM_I_REMOTE_*
+    environment:
+      SIM_I_DATABASE: "Host=postgres;Database=simi;Username=simi;Password=${SIM_I_DB_PASSWORD}"
+      SIM_I_SOURCE_DIR: /source
+    ports:
+      # Published unchanged: the port mapper tells clients the ports inside the container.
+      # SIM_I_HOST is the address they're published on: 127.0.0.1 for this machine only.
+      - "${SIM_I_HOST:-127.0.0.1}:2323:2323"   # 5250 Telnet
+      - "${SIM_I_HOST:-127.0.0.1}:992:992"     # 5250 Telnet, TLS
+      - "${SIM_I_HOST:-127.0.0.1}:449:449"     # port mapper
+      - "${SIM_I_HOST:-127.0.0.1}:8476:8476"   # sign-on
+      - "${SIM_I_HOST:-127.0.0.1}:9476:9476"
+      - "${SIM_I_HOST:-127.0.0.1}:8475:8475"   # remote command
+      - "${SIM_I_HOST:-127.0.0.1}:9475:9475"
+      - "${SIM_I_HOST:-127.0.0.1}:8474:8474"   # Network Print
+      - "${SIM_I_HOST:-127.0.0.1}:9474:9474"
+      - "${SIM_I_HOST:-127.0.0.1}:8473:8473"   # file server
+      - "${SIM_I_HOST:-127.0.0.1}:9473:9473"
+      - "${SIM_I_HOST:-127.0.0.1}:8080:8080"   # web source editor
+      - "${SIM_I_HOST:-127.0.0.1}:4711:4711"   # debug server, for VS Code
+    volumes:
+      - ${SIM_I_SOURCE:?set SIM_I_SOURCE in .env}:/source:ro
+      - sim-i-ifs:/ifs
+      - sim-i-certs:/certs
+
+volumes:
+  postgres-data:
+  sim-i-ifs:
+  sim-i-certs:
+```
+
+And a `.env` beside it, readable only by you (`chmod 600 .env`), since it holds passwords:
+
+```bash
+# Which image: prod, beta, a version (0.2.0), or a branch's name.
+SIM_I_TAG=prod
+# The database's password. Set it before the first start: PostgreSQL keeps the one it starts with.
+SIM_I_DB_PASSWORD=change-me
+# The folder on this machine with a folder for each library, as in the Quickstart.
+SIM_I_SOURCE=/srv/sim-i/source
+# 0.0.0.0 to let other machines connect; 127.0.0.1 for this machine only.
+SIM_I_HOST=0.0.0.0
+# The name clients connect to, for the TLS certificate Sim i makes on its first start.
+SIM_I_TLS_NAMES=sim-i.example.com
+
+# The users (see Users). Change the passwords from .env.example's.
+SIM_I_USER=PRTUSER
+SIM_I_PASSWORD=change-me-too
+SIM_I_EXPIRED_USER=EXPUSER
+SIM_I_EXPIRED_PASSWORD=Expired1
+SIM_I_LOCKED_USER=LOCKUSER
+SIM_I_LOCKED_PASSWORD=Locked12
+
+# Who SAVRSTLIB and SAVRSTOBJ sign on to the real IBM i as (optional).
+SIM_I_REMOTE_USER=
+SIM_I_REMOTE_PASSWORD=
+```
+
+Then, in that folder:
+
+```bash
+docker compose up -d                                       # start it, and again at each boot (restart: unless-stopped)
+docker compose logs -f sim-i                               # the start-up report on your source
+docker compose restart sim-i                               # read changed source again
+docker compose pull && docker compose up -d                # move to the newest image of SIM_I_TAG
+docker compose cp sim-i:/certs/sim-i.crt .                 # the certificate for TLS clients to trust
+```
+
+- **Where things are kept:** the libraries are in the `postgres-data` volume, the IFS in `sim-i-ifs` and the certificate in `sim-i-certs`. They survive `docker compose down` and new images; `docker compose down -v` deletes them. Back up the database with `docker compose exec postgres pg_dump -U simi simi > simi.sql`.
+- **Ports:** the ports below 1024 (449 and 992) need nothing special, as the container listens on them. Leave out the lines of servers you don't want reachable, but keep 449 with sign-on and remote command if ACS connects.
+- **Exposure:** Sim i is a development tool: the passwords are kept as typed, and the web editor and debug server run code. With `SIM_I_HOST=0.0.0.0`, keep it behind a firewall or VPN and off the internet.
+- **The certificate's names** come from `SIM_I_TLS_NAMES` only when Sim i makes the certificate, on the first start. To change them later, delete the volume (`docker compose down` then `docker volume rm sim-i_sim-i-certs`) and start again; clients then need to trust the new certificate.
 
 Docker:
 
