@@ -66,6 +66,8 @@ try
     machine.Progress = Log;
     machine.InstallSystemSource(Log);
     var users = Users.Open(machine.Store, settings);
+    // A user's home directory, /home/USER, is made in the IFS the first time they sign on.
+    machine.Ifs.MakeHomesFor(users, Log);
     Console.WriteLine($"users{(envFile is null ? "" : $" (settings from {envFile})")}: {string.Join(", ", users.All)}");
     if (options.SourceDir is not null) machine.Import(options.SourceDir, Log);
     var certificate = options.AnyTls

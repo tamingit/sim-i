@@ -106,6 +106,35 @@ public sealed class Ifs
         File.WriteAllText(host, text);
     }
 
+    /// <summary>
+    /// Makes /home/USER, the user's home directory, and /home when it isn't there. A home directory that's
+    /// there already, whatever its case, is left as it is. True when it made one.
+    /// </summary>
+    public bool MakeHome(string user)
+    {
+        var host = HostPath($"/home/{user.Trim().ToUpperInvariant()}");
+        if (Directory.Exists(host)) return false;
+        Directory.CreateDirectory(host);
+        return true;
+    }
+
+    /// <summary>
+    /// Makes each user's home directory (see <see cref="MakeHome"/>) as they sign on, through any server. One that
+    /// can't be made (a file in the way, a link out of the IFS) is logged, and the sign-on goes on.
+    /// </summary>
+    public void MakeHomesFor(Users users, Action<string>? log = null) =>
+        users.SignedOn += profile =>
+        {
+            try
+            {
+                if (MakeHome(profile.User)) log?.Invoke($"integrated file system: made /home/{profile.User}");
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                log?.Invoke($"integrated file system: couldn't make /home/{profile.User}: {e.Message}");
+            }
+        };
+
     /// <summary>The entries of a directory, as IFS paths, directories first; null when there's no such directory.</summary>
     public IReadOnlyList<(string Name, bool Directory, long Size, DateTime Changed)>? List(string path, string current = "/")
     {

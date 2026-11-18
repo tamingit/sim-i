@@ -8,6 +8,71 @@ It was split out of [GreenGlow Connect](https://github.com/tamingit/greenglow), 
 
 **Status:** it serves the clients it was written for. The next goal is enough fidelity that IBM i Access Client Solutions (ACS) can connect to it and behave as it does with a real IBM i.
 
+## Quickstart
+
+You need Docker with the compose plugin. Sim i runs in one container and PostgreSQL, where it keeps every library, in another. Your source stays in a folder on your machine.
+
+**1. Lay out your source.** The folder you give Sim i holds a folder for each library, and each of those a folder for each source file (or the members straight in it):
+
+```
+/home/you/work/erp/source/
+  DEMOLIB/
+    QRPGLESRC/invoice.rpgle      member INVOICE of DEMOLIB/QRPGLESRC
+    QDDSSRC/custlistd.dspf
+    QSQLSRC/tables.sql
+```
+
+No source yet? Use `examples/customers` from this repository.
+
+**2. Point Sim i at it.** Put a `compose.override.yaml` beside `compose.yaml` (compose reads it by itself, so `compose.yaml` stays as it is):
+
+```yaml
+services:
+  sim-i:
+    environment:
+      SIM_I_SOURCE_DIR: /source
+    volumes:
+      - /home/you/work/erp/source:/source:ro   # or ./examples/customers:/source:ro
+```
+
+The left side is the path on your machine. The container runs as a non-root user, so the files must be readable by everyone (a normal checkout is).
+
+**3. Start it.**
+
+```bash
+docker compose up --build
+```
+
+This builds the image, starts PostgreSQL 17, waits until it's ready, then starts Sim i, which makes a library for each library folder and saves, checks and creates each member. Members with errors are listed in the log and don't stop it.
+
+**4. Use it.**
+
+- **Web editor:** <http://localhost:8080/>, signing on as `PRTUSER` / `Secret12`.
+- **5250:** any TN5250 client on `localhost` port 2323. With `examples/customers`, enter `CALL DEMOLIB/CUSTMNT`.
+- **VS Code:** the debug server is on port 4711 (the extension is in `vscode/sim-i`).
+
+Change a member on your machine and restart (`docker compose restart sim-i`): only what changed is made again. The database, the IFS and the TLS certificate are kept in named volumes; `docker compose down -v` throws them away and starts clean.
+
+**Without compose**, the same with plain `docker`:
+
+```bash
+docker network create sim-i
+docker run -d --name sim-i-db --network sim-i -v sim-i-db:/var/lib/postgresql/data \
+  -e POSTGRES_USER=simi -e POSTGRES_PASSWORD=simi -e POSTGRES_DB=simi postgres:17
+until docker exec sim-i-db pg_isready -U simi -d simi; do sleep 1; done
+
+docker build -t sim-i .
+docker run --rm --name sim-i --network sim-i \
+  -e SIM_I_DATABASE="Host=sim-i-db;Database=simi;Username=simi;Password=simi" \
+  -e SIM_I_SOURCE_DIR=/source -v /home/you/work/erp/source:/source:ro \
+  -v sim-i-ifs:/ifs -v sim-i-certs:/certs \
+  -p 127.0.0.1:2323:2323 -p 127.0.0.1:8080:8080 -p 127.0.0.1:4711:4711 \
+  -p 127.0.0.1:449:449 -p 127.0.0.1:8473:8473 -p 127.0.0.1:8474:8474 -p 127.0.0.1:8475:8475 -p 127.0.0.1:8476:8476 \
+  sim-i
+```
+
+[docs/getting-started.md](docs/getting-started.md) goes on from here: checking source without starting anything, copying data from a real IBM i, and debugging in VS Code. [Running it](#running-it) has every option, and [a compose file for deploying the published image](#deploying-the-published-image-with-compose) on a server.
+
 ## What it does
 
 **5250 display (Telnet, port 2323)**
@@ -43,7 +108,7 @@ Password levels 0 and 1 use DES; 2 and 3 use SHA-1. Sim i runs at level 2.
 
   The log names each command and program, with the program's parameter sizes and, for `QSYCKUFU`, the function checked. It never logs a command's parameters or other programs' data, which can hold passwords.
 - **Network Print (port 8474):** it lists placeholder spooled files and sends their contents. After those come the spooled files RPG programs printed, as *SCS files (see [RPG](#rpg)).
-- **File server (port 8473):** the [integrated file system](#ifs) by path, as JTOpen's `IFSFileInputStream` and ACS read it. It exchanges attributes (datastream level 24, path names in UTF-16), opens a file for reading with its dates and size, reads it, and closes it. A refusal has the IBM i's return code: 2 no such file, 3 no such folder, 4 a folder opened as a file, 6 no such handle, 13 a path that leads out of the IFS. Every layout was checked against a real IBM i. *Not supported yet* (return code 23): opening for writing, creating files, and listing folders. The log names each request and path, never a file's contents.
+- **File server (port 8473):** the [integrated file system](#ifs) by path, as JTOpen's `IFSFile` streams, ACS and GreenGlow's Files panel use it. It exchanges attributes (datastream level 24, path names in UTF-16) and then: lists a folder's entries (a pattern such as `folder/*`, with `*` and `?`, whatever their case; an empty folder is return code 2, as on an IBM i), each with a restart ID, and goes on after a restart ID or name; opens a file to read, write or both, with the IBM i's open options (create or open, create or replace, create but fail if there, open or fail, replace); reads, writes (in requests of up to 64 MiB) and closes; creates and deletes folders (only empty ones) and files; and renames, never over a name in use. A refusal has the IBM i's return code: 2 no such file, 3 no such folder, 4 a name already in use (or a folder opened as a file), 6 no such handle, 9 a folder that isn't empty, 13 a path that leads out of the IFS, a change in `/QSYS.LIB` (its libraries are in the database, not files) or a write through a handle opened for reading. The reading requests were checked against a real IBM i; the writing ones follow IBM's Toolbox for Java and are still to be checked against one. Text is kept as UTF-8, which Sim i's programs read: a file created or replaced with another text CCSID (37, 367, 819, 1252, 1200 or 13488) is converted to UTF-8 when it is closed, unless it doesn't look like text in that CCSID (a NUL byte, broken UTF-16) or is over 64 MB; UTF-8, binary (65535) and untagged files are kept as sent, and no tag is stored. The log names each request and path, never a file's contents.
 
 <a id="rpg"></a>**RPG, SQL and source**
 
@@ -73,7 +138,7 @@ Sim i runs RPG IV, free-form and fixed-form, against PostgreSQL. It has librarie
 
 A debugger signs on with a user profile (the extension asks for the password once and keeps it in VS Code's secret storage); the debug port itself isn't encrypted. Only RPG is debugged: a CL program runs through, and its RPG is stopped in. A program runs the source it was last compiled from, so a breakpoint in a file that's been changed and not saved is off by the lines added. Statements brought in by `/COPY` have their own line numbers, so a breakpoint on a line can stop in a copied statement of the same number. Code-server, or any editor with a Debug Adapter Protocol client, connects the same way.
 
-<a id="ifs"></a>*Integrated file system:* the IFS's root is a folder on the host, `--ifs-dir` (default: `ifs` in the database folder, or a temporary one). Names are found whatever their case, as in the IFS's root file system, and no path leads out of the folder, through `..` or a symbolic link. `/QSYS.LIB/LIB.LIB/FILE.FILE/MBR.MBR` paths are members. It's used by `/COPY` of stream files, `SRCSTMF` on `CRTBNDRPG`, `CRTSQLRPGI`, `CRTRPGMOD`, `CRTBNDCL` and `RUNSQLSTM`, the IFS commands (`MKDIR`, `RMDIR`, `RMVLNK`/`DEL`, `CHGCURDIR`/`CD`, `CPY`, `CPYTOSTMF`, `CPYFRMSTMF`) and RPG's IFS APIs.
+<a id="ifs"></a>*Integrated file system:* the IFS's root is a folder on the host, `--ifs-dir` (default: `ifs` in the database folder, or a temporary one). Names are found whatever their case, as in the IFS's root file system, and no path leads out of the folder, through `..` or a symbolic link. A user's home directory, `/home/USER`, is made the first time they sign on, through any server (one that's there already, in any case, is kept). `/QSYS.LIB/LIB.LIB/FILE.FILE/MBR.MBR` paths are members. It's used by `/COPY` of stream files, `SRCSTMF` on `CRTBNDRPG`, `CRTSQLRPGI`, `CRTRPGMOD`, `CRTBNDCL` and `RUNSQLSTM`, the IFS commands (`MKDIR`, `RMDIR`, `RMVLNK`/`DEL`, `CHGCURDIR`/`CD`, `CPY`, `CPYTOSTMF`, `CPYFRMSTMF`) and RPG's IFS APIs.
 
 <a id="savrst"></a>*Receiving a library from a real IBM i:* `SAVRSTLIB LIB(MYLIB) RMTLOCNAME(real.example.com)` fetches a library from a real system, and `SAVRSTOBJ OBJ(CUSTPF ORD*) LIB(MYLIB) RMTLOCNAME(real.example.com)` some of its objects (names, generic names or `*ALL`; `OBJTYPE(*FILE *DTAARA *MSGF)` and `OMITOBJ(ABC* XYZ)` narrow them; `RSTLIB(OTHER)` puts them in another library). On an IBM i these commands send a library *to* the remote system over ObjectConnect; here they bring it *from* it, over its FTP server (remote commands and binary transfers), as Sim i can't read a save. What comes across is the data and what describes it:
 
@@ -138,10 +203,114 @@ As on an IBM i, TLS is a second port for the same server: Telnet on 992, sign-on
 
 ## Running it
 
-`docker compose up --build` runs Sim i with every server, the web editor on port 8080, and the PostgreSQL it keeps everything in (see `compose.yaml`).
+`docker compose up --build` runs Sim i with every server, the web editor on port 8080, and the PostgreSQL it keeps everything in (see `compose.yaml`, and the [Quickstart](#quickstart) for loading your source).
 
 New here? [docs/getting-started.md](docs/getting-started.md) walks through loading your source, copying data from a real IBM i, and debugging in VS Code.
 
+### Deploying the published image with compose
+
+The repository's `compose.yaml` builds Sim i from source. To run it on a server instead, use the image from GitHub's registry (see [Releases](#releases) for its tags): no checkout and no .NET SDK, only Docker with the compose plugin. Make a folder for it, with this `compose.yml` in it:
+
+```yaml
+# Sim i from ghcr.io, with its PostgreSQL.   docker compose up -d
+# The values in ${...} come from the .env file beside this one.
+name: sim-i
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: simi
+      POSTGRES_PASSWORD: ${SIM_I_DB_PASSWORD:?set SIM_I_DB_PASSWORD in .env}
+      POSTGRES_DB: simi
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U simi -d simi"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # No ports: only Sim i reaches the database, over compose's own network.
+
+  sim-i:
+    image: ghcr.io/tamingit/sim-i:${SIM_I_TAG:-prod}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env   # the users, SIM_I_TLS_NAMES and SIM_I_REMOTE_*
+    environment:
+      SIM_I_DATABASE: "Host=postgres;Database=simi;Username=simi;Password=${SIM_I_DB_PASSWORD}"
+      SIM_I_SOURCE_DIR: /source
+    ports:
+      # Published unchanged: the port mapper tells clients the ports inside the container.
+      # SIM_I_HOST is the address they're published on: 127.0.0.1 for this machine only.
+      - "${SIM_I_HOST:-127.0.0.1}:2323:2323"   # 5250 Telnet
+      - "${SIM_I_HOST:-127.0.0.1}:992:992"     # 5250 Telnet, TLS
+      - "${SIM_I_HOST:-127.0.0.1}:449:449"     # port mapper
+      - "${SIM_I_HOST:-127.0.0.1}:8476:8476"   # sign-on
+      - "${SIM_I_HOST:-127.0.0.1}:9476:9476"
+      - "${SIM_I_HOST:-127.0.0.1}:8475:8475"   # remote command
+      - "${SIM_I_HOST:-127.0.0.1}:9475:9475"
+      - "${SIM_I_HOST:-127.0.0.1}:8474:8474"   # Network Print
+      - "${SIM_I_HOST:-127.0.0.1}:9474:9474"
+      - "${SIM_I_HOST:-127.0.0.1}:8473:8473"   # file server
+      - "${SIM_I_HOST:-127.0.0.1}:9473:9473"
+      - "${SIM_I_HOST:-127.0.0.1}:8080:8080"   # web source editor
+      - "${SIM_I_HOST:-127.0.0.1}:4711:4711"   # debug server, for VS Code
+    volumes:
+      - ${SIM_I_SOURCE:?set SIM_I_SOURCE in .env}:/source:ro
+      - sim-i-ifs:/ifs
+      - sim-i-certs:/certs
+
+volumes:
+  postgres-data:
+  sim-i-ifs:
+  sim-i-certs:
+```
+
+And a `.env` beside it, readable only by you (`chmod 600 .env`), since it holds passwords:
+
+```bash
+# Which image: prod, beta, a version (0.2.0), or a branch's name.
+SIM_I_TAG=prod
+# The database's password. Set it before the first start: PostgreSQL keeps the one it starts with.
+SIM_I_DB_PASSWORD=change-me
+# The folder on this machine with a folder for each library, as in the Quickstart.
+SIM_I_SOURCE=/srv/sim-i/source
+# 0.0.0.0 to let other machines connect; 127.0.0.1 for this machine only.
+SIM_I_HOST=0.0.0.0
+# The name clients connect to, for the TLS certificate Sim i makes on its first start.
+SIM_I_TLS_NAMES=sim-i.example.com
+
+# The users (see Users). Change the passwords from .env.example's.
+SIM_I_USER=PRTUSER
+SIM_I_PASSWORD=change-me-too
+SIM_I_EXPIRED_USER=EXPUSER
+SIM_I_EXPIRED_PASSWORD=Expired1
+SIM_I_LOCKED_USER=LOCKUSER
+SIM_I_LOCKED_PASSWORD=Locked12
+
+# Who SAVRSTLIB and SAVRSTOBJ sign on to the real IBM i as (optional).
+SIM_I_REMOTE_USER=
+SIM_I_REMOTE_PASSWORD=
+```
+
+Then, in that folder:
+
+```bash
+docker compose up -d                                       # start it, and again at each boot (restart: unless-stopped)
+docker compose logs -f sim-i                               # the start-up report on your source
+docker compose restart sim-i                               # read changed source again
+docker compose pull && docker compose up -d                # move to the newest image of SIM_I_TAG
+docker compose cp sim-i:/certs/sim-i.crt .                 # the certificate for TLS clients to trust
+```
+
+- **Where things are kept:** the libraries are in the `postgres-data` volume, the IFS in `sim-i-ifs` and the certificate in `sim-i-certs`. They survive `docker compose down` and new images; `docker compose down -v` deletes them. Back up the database with `docker compose exec postgres pg_dump -U simi simi > simi.sql`.
+- **Ports:** the ports below 1024 (449 and 992) need nothing special, as the container listens on them. Leave out the lines of servers you don't want reachable, but keep 449 with sign-on and remote command if ACS connects.
+- **Exposure:** Sim i is a development tool: the passwords are kept as typed, and the web editor and debug server run code. With `SIM_I_HOST=0.0.0.0`, keep it behind a firewall or VPN and off the internet.
+- **The certificate's names** come from `SIM_I_TLS_NAMES` only when Sim i makes the certificate, on the first start. To change them later, delete the volume (`docker compose down` then `docker volume rm sim-i_sim-i-certs`) and start again; clients then need to trust the new certificate.
 
 Docker:
 
@@ -149,11 +318,11 @@ Docker:
 docker run --rm --env-file .env -e SIM_I_DATABASE="Host=db.example;Database=simi;Username=simi;Password=..." -v sim-i-certs:/certs \
   -p 127.0.0.1:2323:2323 -p 127.0.0.1:992:992 -p 127.0.0.1:8474:8474 -p 127.0.0.1:9474:9474 \
   -p 127.0.0.1:8475:8475 -p 127.0.0.1:9475:9475 -p 127.0.0.1:8476:8476 -p 127.0.0.1:9476:9476 \
-  -p 127.0.0.1:449:449 ghcr.io/tamingit/sim-i
+  -p 127.0.0.1:8473:8473 -p 127.0.0.1:9473:9473 -p 127.0.0.1:449:449 ghcr.io/tamingit/sim-i:prod
 ```
 
 - **Ports:** publish each port on the same number: the port mapper tells clients the ports inside the container.
-- **Database:** the image keeps everything in the PostgreSQL database `SIM_I_DATABASE` names (compose.yaml runs one beside it). To load source, mount a folder with a folder for each library, and name it with `--source-dir` (or `-e SIM_I_SOURCE_DIR=/source`, which also overrides a `.env` that names a folder on the host): `-v "$PWD/examples/customers:/source:ro" ... ghcr.io/tamingit/sim-i --source-dir /source`. The IFS is `/ifs`: mount a named volume there to keep it.
+- **Database:** the image keeps everything in the PostgreSQL database `SIM_I_DATABASE` names (compose.yaml runs one beside it). To load source, mount a folder with a folder for each library, and name it with `--source-dir` (or `-e SIM_I_SOURCE_DIR=/source`, which also overrides a `.env` that names a folder on the host): `-v "$PWD/examples/customers:/source:ro" ... ghcr.io/tamingit/sim-i:prod --source-dir /source`. The IFS is `/ifs`: mount a named volume there to keep it.
 - **Certificate:** the image keeps its certificate in `/certs`. The named volume keeps it from one run to the next, so clients only need to trust it once. Copy out the part to trust with `docker cp <container>:/certs/sim-i.crt .`. Use a named volume rather than a directory: Sim i runs as a non-root user, which can't write to a directory you mount.
 
 With the .NET 10 SDK:
@@ -225,16 +394,18 @@ GitHub Actions runs the tests and builds the image on every push.
 
 ## Releases
 
-Publishing a GitHub release from main runs the tests, then pushes the image to GitHub's container registry:
+`.github/workflows/release.yml` runs the tests, then builds the image and pushes it to GitHub's container registry, `ghcr.io/tamingit/sim-i`.
 
-| Release tag | Image tags |
+| What | Image tags |
 |---|---|
-| `vX.Y.Z-beta` or `vX.Y.Z-beta.N` | `ghcr.io/tamingit/sim-i:X.Y.Z-beta.N` and `:beta` |
-| `vX.Y.Z` | `ghcr.io/tamingit/sim-i:X.Y.Z` and `:latest` |
+| A published release `vX.Y.Z-beta` or `vX.Y.Z-beta.N` | `X.Y.Z-beta.N` and `beta` |
+| A published release `vX.Y.Z` | `X.Y.Z` and `prod` |
+| A push to any branch, such as `feature/login` | the branch name, `feature-login` (`/` becomes `-`), and `preview-sha-<commit>` |
 
 ```bash
 gh release create v0.1.0-beta.1 --target main --prerelease --generate-notes   # beta
-gh release create v0.1.0 --target main --generate-notes                       # stable
+gh release create v0.1.0 --target main --generate-notes                       # prod
+docker pull ghcr.io/tamingit/sim-i:feature-login                              # a branch's latest push
 ```
 
-Other tags, and releases whose commit isn't on main, are refused.
+Other release tags, and releases whose commit isn't on main, are refused. So is a branch whose name would be a release's tag (`prod`, `beta`, `latest`, `1.2.3`). Every night, preview images that haven't been updated for 30 days are deleted, unless a release also carries them. Running the workflow by hand (Actions, Release, Run workflow) lists what would be deleted; turn off `dry_run` to delete it.
