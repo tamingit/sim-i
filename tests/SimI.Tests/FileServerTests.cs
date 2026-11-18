@@ -302,6 +302,27 @@ public sealed class FileServerTests : IDisposable
     }
 
     [Fact]
+    public async Task SigningOnMakesTheUsersHomeDirectory()
+    {
+        var ifs = NewIfs();
+        var users = Users.Defaults();
+        var log = new List<string>();
+        ifs.MakeHomesFor(users, line => { lock (log) log.Add(line); });
+        await using var server = await FileServer.StartAsync(ifs, users: users);
+
+        // Before, there's no such folder (3); after the sign-on, it's there and empty (2), as a new user's is.
+        Assert.False(ifs.DirectoryExists("/home/PRTUSER"));
+        await using var client = await Client.SignOnAsync(server.Port);
+        await client.SendAsync(Exchange());
+        Assert.Equal(2, ReturnCode(Assert.Single(await client.ListAsync("/home/PRTUSER/*"))));
+        Assert.Equal(["integrated file system: made /home/PRTUSER"], log);
+
+        // A refused sign-on makes nothing.
+        await Assert.ThrowsAnyAsync<Exception>(() => Client.SignOnAsync(server.Port, Users.DefaultExpiredUser, Users.DefaultExpiredPassword));
+        Assert.False(ifs.DirectoryExists("/home/" + Users.DefaultExpiredUser));
+    }
+
+    [Fact]
     public async Task AWrongPasswordIsRefusedAtStartServer()
     {
         await using var server = await FileServer.StartAsync(NewIfs());

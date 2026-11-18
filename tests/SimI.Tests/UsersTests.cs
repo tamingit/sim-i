@@ -30,6 +30,23 @@ public class UsersTests
         Assert.Equal(Users.DefaultLockedPassword, users.Find("LOCKUSER")!.Password);
     }
 
+    [Fact]
+    public void OnlyASignOnThatSucceedsIsAnnounced()
+    {
+        var users = Users.Defaults();
+        var signedOn = new List<string>();
+        users.SignedOn += p => signedOn.Add(p.User);
+
+        users.Check("prtuser", "wrong");
+        users.Check(Users.DefaultExpiredUser, Users.DefaultExpiredPassword);
+        users.Check(Users.DefaultLockedUser, Users.DefaultLockedPassword);
+        users.Check("NOBODY", "Secret12");
+        Assert.Empty(signedOn);
+
+        Assert.Equal(SignOnResult.SignedOn, users.Check("prtuser", Users.DefaultPassword).Result);
+        Assert.Equal(["PRTUSER"], signedOn);
+    }
+
     [Theory]
     [InlineData("SIM_I_USER", "1ABC")]
     [InlineData("SIM_I_USER", "ELEVENCHARS")]

@@ -36,6 +36,36 @@ public class IfsTests
     }
 
     [Fact]
+    public void AHomeDirectoryIsMadeOnceAndOneThereIsKept()
+    {
+        using var machine = Machine.Open();
+        Assert.True(machine.Ifs.MakeHome("prtuser"));
+        Assert.True(Directory.Exists(Path.Combine(machine.Ifs.Root, "home", "PRTUSER")));
+        Assert.False(machine.Ifs.MakeHome("PRTUSER"));
+
+        // One made by hand, in another case, is the user's: no second one is made beside it.
+        Directory.CreateDirectory(Path.Combine(machine.Ifs.Root, "home", "devuser"));
+        File.WriteAllText(Path.Combine(machine.Ifs.Root, "home", "devuser", "keep.txt"), "kept");
+        Assert.False(machine.Ifs.MakeHome("DEVUSER"));
+        Assert.Equal(["PRTUSER", "devuser"], Directory.GetDirectories(Path.Combine(machine.Ifs.Root, "home")).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+        Assert.True(machine.Ifs.FileExists("/home/DEVUSER/keep.txt"));
+    }
+
+    [Fact]
+    public void AHomeDirectoryThatCantBeMadeDoesntStopTheSignOn()
+    {
+        using var machine = Machine.Open();
+        var users = Users.Defaults();
+        var log = new List<string>();
+        machine.Ifs.MakeHomesFor(users, log.Add);
+        Directory.CreateDirectory(Path.Combine(machine.Ifs.Root, "home"));
+        File.WriteAllText(Path.Combine(machine.Ifs.Root, "home", "PRTUSER"), "a file in the way");
+
+        Assert.Equal(SignOnResult.SignedOn, users.Check(Users.DefaultUser, Users.DefaultPassword).Result);
+        Assert.StartsWith("integrated file system: couldn't make /home/PRTUSER: ", Assert.Single(log));
+    }
+
+    [Fact]
     public void CopyOfAStreamFileBringsItInWithRelativePaths()
     {
         using var machine = Machine.Open();
