@@ -6,6 +6,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using static SimI.Stream5250;
 
 namespace SimI;
@@ -58,6 +59,7 @@ public sealed class TelnetServer : IAsyncDisposable
     private readonly List<ReceivedInput> _inputs = [];
     private readonly List<Task> _tasks = [];
     private readonly HashSet<TcpClient> _clients = [];
+    private readonly HashSet<Terminal> _terminals = [];
     private readonly CancellationTokenSource _stop = new();
     private Task[] _acceptLoops = [];
     private int _connections;
@@ -187,6 +189,89 @@ public sealed class TelnetServer : IAsyncDisposable
 
     private void Log(string line) => _log?.Invoke(line);
 
+    // ---- programs run in a user's session for the debugger ----
+
+    /// <summary>A session as others see it: whose it is while it waits at the main menu's command line (null otherwise), and what they ask of it.</summary>
+    private sealed class Terminal
+    {
+        public volatile string? IdleUser;
+        public long IdleSince;
+        public readonly Channel<SessionRequest> Requests = Channel.CreateUnbounded<SessionRequest>();
+    }
+
+    /// <summary>A command for a session to run. The session claims it, or the one who asked gives up on it: whichever comes first.</summary>
+    private sealed class SessionRequest(string command, Action<JobState> claimed)
+    {
+        private int _state;
+
+        public string Command => command;
+
+        public TaskCompletionSource<SessionRun> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>The session takes it: the one who asked learns the session's job before the command starts.</summary>
+        public bool Claim(JobState job)
+        {
+            if (Interlocked.CompareExchange(ref _state, 1, 0) != 0) return false;
+            claimed(job);
+            return true;
+        }
+
+        public bool Abandon() => Interlocked.CompareExchange(ref _state, 2, 0) == 0;
+    }
+
+    /// <summary>A program run in a user's 5250 session: the session's device, how the program ended, and a way to end it.</summary>
+    internal sealed class SessionRun(string device)
+    {
+        private readonly TaskCompletionSource<(bool Ok, string? Message)> _ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string Device => device;
+
+        public Task<(bool Ok, string? Message)> Ended => _ended.Task;
+
+        internal InteractiveJob? Job { get; set; }
+
+        public void Cancel() => Job?.Cancel();
+
+        internal void Finish(bool ok, string? message) => _ended.TrySetResult((ok, message));
+    }
+
+    /// <summary>
+    /// Runs <paramref name="command"/> in a 5250 session of <paramref name="user"/>'s that waits at the main menu's command line (the
+    /// one that came back to it last), as though it were typed there: the program's screens show in that session. Waits up to
+    /// <paramref name="wait"/> for such a session; null when none took it. <paramref name="claimed"/> is given the session's job
+    /// before the command starts, so the debugger knows the job when the program's first statement runs.
+    /// </summary>
+    internal async Task<SessionRun?> RunInSessionAsync(string user, string command, Action<JobState> claimed, TimeSpan wait, CancellationToken cancel)
+    {
+        var deadline = DateTime.UtcNow + wait;
+        while (true)
+        {
+            Terminal? terminal;
+            lock (_gate)
+            {
+                terminal = _terminals.Where(t => string.Equals(t.IdleUser, user, StringComparison.OrdinalIgnoreCase))
+                    .OrderByDescending(t => Volatile.Read(ref t.IdleSince)).FirstOrDefault();
+            }
+            if (terminal is not null)
+            {
+                var request = new SessionRequest(command, claimed);
+                terminal.Requests.Writer.TryWrite(request);
+                try
+                {
+                    return await request.Started.Task.WaitAsync(TimeSpan.FromSeconds(2), cancel);
+                }
+                catch (Exception e) when (e is TimeoutException or OperationCanceledException)
+                {
+                    // Claimed as the wait ran out: it's starting.
+                    if (!request.Abandon()) return await request.Started.Task;
+                    cancel.ThrowIfCancellationRequested();
+                }
+            }
+            if (DateTime.UtcNow >= deadline) return null;
+            await Task.Delay(250, cancel);
+        }
+    }
+
     private void Trace(int id, string line)
     {
         if (_trace) Log($"#{id} {line}");
@@ -278,6 +363,10 @@ public sealed class TelnetServer : IAsyncDisposable
         // The client's next record, and (while a program runs) its next screen: whichever comes first is handled.
         Task<int>? reading = null;
         Task<RunEvent>? programEvent = null;
+        // What others ask this session to run (the debugger, F5 in VS Code), taken while it waits at the command line.
+        var listed = new Terminal();
+        Task<SessionRequest>? asking = null;
+        lock (_gate) _terminals.Add(listed);
 
         async Task SendAsync(byte[] bytes, string what)
         {
@@ -314,6 +403,8 @@ public sealed class TelnetServer : IAsyncDisposable
                 {
                     session.Job = null;
                     Log($"#{id} program ended{(next.Failed ? " in error" : "")}");
+                    session.Run?.Finish(!next.Failed, next.Message);
+                    session.Run = null;
                     screen = session.Panel is null ? Screen.Main : Screen.Panel;
                     await SendAsync(Show(screen, next.Message, session), $"screen {screen}");
                     return false;
@@ -330,6 +421,41 @@ public sealed class TelnetServer : IAsyncDisposable
         while (true)
         {
             reading ??= stream.ReadAsync(buffer, _stop.Token).AsTask();
+            var idle = started && screen == Screen.Main && session.Job is null && session.User.Length > 0;
+            if (idle != (listed.IdleUser is not null))
+            {
+                if (idle) Volatile.Write(ref listed.IdleSince, Environment.TickCount64);
+                listed.IdleUser = idle ? session.User : null;
+            }
+            if (idle)
+            {
+                asking ??= listed.Requests.Reader.ReadAsync(_stop.Token).AsTask();
+                if (await Task.WhenAny(reading, asking) == asking)
+                {
+                    var request = await asking;
+                    asking = null;
+                    // One its asker has given up on is dropped.
+                    if (!request.Claim(session.State)) continue;
+                    Log($"#{id} {session.User}'s debugger runs a program in this session");
+                    var run = new SessionRun(device!);
+                    session.Run = run;
+                    var (next, message) = Command(request.Command, session);
+                    screen = next ?? Screen.Main;
+                    run.Job = session.Job;
+                    request.Started.TrySetResult(run);
+                    if (session.Job is not null)
+                    {
+                        await PumpAsync();
+                    }
+                    else
+                    {
+                        session.Run = null;
+                        run.Finish(false, message);
+                        await SendAsync(Show(screen, message, session), $"screen {screen}");
+                    }
+                    continue;
+                }
+            }
             if (session.Job is { } waiting)
             {
                 // A program that waits for the user with a time limit (WAITRCD) sends its next screen by itself.
@@ -483,6 +609,9 @@ public sealed class TelnetServer : IAsyncDisposable
         {
             // A program still running ends with its session.
             session.Job?.Cancel();
+            session.Run?.Finish(false, "The 5250 session closed before the program ended.");
+            listed.IdleUser = null;
+            lock (_gate) _terminals.Remove(listed);
         }
     }
 
@@ -590,6 +719,9 @@ public sealed class TelnetServer : IAsyncDisposable
 
         /// <summary>The program running, when one is.</summary>
         public InteractiveJob? Job { get; set; }
+
+        /// <summary>The program the debugger asked this session to run, while it runs.</summary>
+        public SessionRun? Run { get; set; }
 
         /// <summary>The job the session's commands and programs run in: its library list, overrides and display.</summary>
         public JobState State { get; set; } = new();

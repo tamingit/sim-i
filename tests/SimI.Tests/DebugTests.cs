@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json.Nodes;
 using SimI.Debugging;
+using SimI.Tests.Client;
 
 namespace SimI.Tests;
 
@@ -352,5 +353,134 @@ public class DebugTests
         Assert.Contains("NOTYET isn't a program on Sim i yet", set["breakpoints"]![0]!["message"]!.GetValue<string>());
         var bad = debugger.Breakpoints((AddLine, "i = = 3"));
         Assert.Contains("isn't an RPG expression", bad["breakpoints"]![0]!["message"]!.GetValue<string>());
+    }
+
+    // ---- a program with screens, in the user's 5250 session ----
+
+    private const string ScreenProgram = """
+        **FREE
+        dcl-f scrd workstn;
+        dcl-s seen int(10);
+        exfmt main;
+        seen = 1;
+        *inlr = *on;
+        """;
+
+    private const int SeenLine = 5;
+    private const string ScreenPath = "/work/src/QGPL/QRPGLESRC/SCRPGM.rpgle";
+
+    /// <summary>A machine with SCRPGM (a display file's program) and DBGPGM, its 5250 server, and the debug server knowing it.</summary>
+    private static async Task<(Machine Machine, TelnetServer Host, DapServer Server)> StartedWithSessions()
+    {
+        var machine = Machine.Open();
+        static string Dds(string name, string usage, string row, string column, string keywords) =>
+            $"     A            {name,-10} {"",5} {"",2}{usage}{row,3}{column,3}{keywords}";
+        foreach (var (name, type, source) in new[]
+        {
+            ("SCRD", "DSPF", string.Join('\n', "     A                                      DSPSIZ(24 80 *DS3)",
+                "     A          R MAIN", Dds("", " ", "1", "30", "'Screen test'"))),
+            ("SCRPGM", "RPGLE", ScreenProgram),
+            ("DBGPGM", "SQLRPGLE", Program),
+        })
+        {
+            var member = new Member("QGPL", Machine.DefaultFile(type), name, type, source);
+            machine.Save(member);
+            var compiled = machine.Compile(member);
+            Assert.True(compiled.Ok, $"{name}: {compiled.Message}");
+        }
+        var users = Users.Open(machine.Store, TestUsers.Settings());
+        var host = await TelnetServer.StartAsync(users: users, machine: machine);
+        var server = await DapServer.StartAsync(0, _ => { }, IPAddress.Loopback, users, machine, host);
+        return (machine, host, server);
+    }
+
+    private static async Task<TestClient> SignOnAsync(TelnetServer host)
+    {
+        var client = await TestClient.ConnectAsync(host, null);
+        await client.WaitForTextAsync("Sign On");
+        await client.PressAsync(new CursorKey(6, 53));
+        await client.TypeAsync("PRTUSER");
+        await client.PressAsync(new CursorKey(7, 53));
+        await client.TypeAsync("Secret12");
+        await client.EnterAsync();
+        await client.WaitForTextAsync("IBM i Main Menu");
+        return client;
+    }
+
+    /// <summary>Launches a program as F5 does, with breakpoints in SCRPGM's source.</summary>
+    private static void LaunchScreenProgram(Debugger debugger, JsonObject launch, params int[] lines)
+    {
+        debugger.Request("initialize", new JsonObject { ["adapterID"] = "sim-i" });
+        launch["user"] = "PRTUSER";
+        launch["password"] = "Secret12";
+        launch["sourceRoot"] = "/work/src";
+        debugger.Request("launch", launch);
+        debugger.Event("initialized");
+        debugger.Request("setBreakpoints", new JsonObject
+        {
+            ["source"] = new JsonObject { ["path"] = ScreenPath },
+            ["breakpoints"] = new JsonArray([.. lines.Select(l => (JsonNode)new JsonObject { ["line"] = l })]),
+        });
+        debugger.Request("configurationDone");
+    }
+
+    [Fact]
+    public async Task ALaunchedProgramWithScreensRunsInTheUsersSessionAndStopsThere()
+    {
+        var (machine, host, server) = await StartedWithSessions();
+        using var _ = machine;
+        await using var __ = host;
+        await using var ___ = server;
+        await using var client = await SignOnAsync(host);
+
+        using var debugger = new Debugger(server.Port);
+        LaunchScreenProgram(debugger, new JsonObject { ["program"] = "QGPL/SCRPGM" }, SeenLine);
+        Assert.Contains("Running in PRTUSER's 5250 session", debugger.OutputUntil("its screens are there"));
+
+        // Its screen is in the session; Enter takes the program on to the breakpoint, in the session's job.
+        await client.WaitForTextAsync("Screen test");
+        await client.EnterAsync();
+        var stop = debugger.Stopped();
+        Assert.Equal(("breakpoint", "SCRPGM", SeenLine), (stop.Reason, stop.Name, stop.Line));
+        Assert.Equal("0", debugger.Evaluate("seen", stop.Frame));
+        debugger.Go(stop.Thread);
+        Assert.Equal(0, debugger.Event("exited")["exitCode"]!.GetValue<int>());
+        debugger.Event("terminated");
+        await client.WaitForTextAsync("IBM i Main Menu");
+    }
+
+    [Fact]
+    public async Task WithNoSessionWaitingItAsksForTheTerminalAndRunsWhenOneSignsOn()
+    {
+        var (machine, host, server) = await StartedWithSessions();
+        using var _ = machine;
+        await using var __ = host;
+        await using var ___ = server;
+
+        using var debugger = new Debugger(server.Port);
+        LaunchScreenProgram(debugger, new JsonObject { ["program"] = "SCRPGM" });
+        Assert.Equal("PRTUSER", debugger.Event("simI.needTerminal")["user"]!.GetValue<string>());
+
+        await using var client = await SignOnAsync(host);
+        await client.WaitForTextAsync("Screen test");
+        await client.EnterAsync();
+        Assert.Equal(0, debugger.Event("exited")["exitCode"]!.GetValue<int>());
+        await client.WaitForTextAsync("IBM i Main Menu");
+    }
+
+    [Fact]
+    public async Task AProgramWithoutScreensStillRunsInAJobOfItsOwn()
+    {
+        var (machine, host, server) = await StartedWithSessions();
+        using var _ = machine;
+        await using var __ = host;
+        await using var ___ = server;
+        await using var client = await SignOnAsync(host);
+
+        using var debugger = new Debugger(server.Port);
+        debugger.Start("launch", new JsonObject { ["program"] = "DBGPGM", ["parms"] = new JsonArray(1) });
+        Assert.Contains("13.00", debugger.OutputUntil("13.00"));
+        Assert.Equal(0, debugger.Event("exited")["exitCode"]!.GetValue<int>());
+        Assert.Contains("IBM i Main Menu", client.Text());
     }
 }

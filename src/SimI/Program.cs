@@ -115,7 +115,7 @@ try
     if (web is not null) Console.WriteLine($"Sim i web source editor listening on port {web.Port}: http://{(options.Bind.Equals(System.Net.IPAddress.Any) ? "localhost" : options.Bind.ToString())}:{web.Port}/");
 
     await using var debug = options.DebugPort is { } debugPort
-        ? await SimI.Debugging.DapServer.StartAsync(debugPort, Log, options.Bind, users, machine)
+        ? await SimI.Debugging.DapServer.StartAsync(debugPort, Log, options.Bind, users, machine, host)
         : null;
     if (debug is not null) Console.WriteLine($"Sim i debug server (Debug Adapter Protocol, for VS Code) listening on port {debug.Port}");
 

@@ -202,12 +202,25 @@ function el(tag, attrs, ...children) {
   return node;
 }
 
-// code-server (the developer's only) and the terminal, when they're on this site.
+// code-server (the developer's only) and the terminal, when they're on this site. Each opens in a tab of its own,
+// named, so this page stays put and clicking again goes back to that tab rather than opening another.
 function showLinks(links) {
   for (const [id, href] of [["codeLink", links && links.code], ["terminalLink", links && links.terminal]]) {
-    if (href) $(id).href = href;
+    if (href) { $(id).href = href; $(id).target = "sim-i-" + id; $(id).onclick = openApp; }
     $(id).classList.toggle("hidden", !href);
   }
+}
+
+// The app's tab when it's already open (left as it is: reloading it would cost its state), else a new one.
+function openApp(event) {
+  const link = event.currentTarget;
+  const tab = window.open("", link.target);
+  if (!tab) return;  // A blocked pop-up: the link's own target opens it.
+  event.preventDefault();
+  let blank = true;
+  try { blank = tab.location.href === "about:blank"; } catch { blank = false; }
+  if (blank) tab.location.href = link.href;
+  tab.focus();
 }
 
 // Where to go after signing on: ?next=, when it's a path on this site (as the code-server gate sends).
@@ -220,6 +233,8 @@ function showSignon() { $("app").classList.add("hidden"); $("signon").classList.
 
 async function start(me) {
   if (nextPath()) { location.href = nextPath(); return; }
+  // code-server is the developer's editor: this page's is for those without it (and for Sim i run without code-server).
+  if (me.links && me.links.code) { location.replace(me.links.code); return; }
   state.user = me.user;
   showLinks(me.links);
   $("who").textContent = `${me.user} · ${me.library}`;

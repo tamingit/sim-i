@@ -2,7 +2,9 @@
 // speak, over TCP. A debugger connects, signs on with a user profile in its launch or attach
 // request, and then either
 //
-//   launches   a program (CALL, in a job of its own; DSPLY goes to the debug console), or
+//   launches   a program: one with screens (a display file) in the user's 5250 session that waits at a command line, as
+//              though CALL were typed there, so its screens show there; any other in a job of its own, DSPLY going
+//              to the debug console. "terminal": true or false in the launch request says which instead; or
 //   attaches   to a user's jobs: when that user's 5250 session (or any job of theirs) reaches a
 //              breakpoint it stops there, its screen waiting, until the debugger lets it go on.
 //
@@ -27,7 +29,7 @@ public sealed class DapServer : IAsyncDisposable
     private readonly Task _accepting;
     private readonly ConcurrentDictionary<Session, bool> _sessions = new();
 
-    private DapServer(TcpListener listener, Action<string> log, Users users, Machine machine)
+    private DapServer(TcpListener listener, Action<string> log, Users users, Machine machine, TelnetServer? terminals)
     {
         _listener = listener;
         Port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -44,7 +46,7 @@ public sealed class DapServer : IAsyncDisposable
                 {
                     return;
                 }
-                var session = new Session(client, log, users, machine);
+                var session = new Session(client, log, users, machine, terminals);
                 _sessions[session] = true;
                 new Thread(() =>
                 {
@@ -63,11 +65,15 @@ public sealed class DapServer : IAsyncDisposable
 
     public int Port { get; }
 
-    public static Task<DapServer> StartAsync(int port, Action<string> log, IPAddress bind, Users users, Machine machine)
+    /// <summary>
+    /// Listens for debuggers. With <paramref name="terminals"/> (the 5250 server), a launched program with screens runs in
+    /// the user's 5250 session; without it, every launched program runs in a job of its own.
+    /// </summary>
+    public static Task<DapServer> StartAsync(int port, Action<string> log, IPAddress bind, Users users, Machine machine, TelnetServer? terminals = null)
     {
         var listener = new TcpListener(bind, port);
         listener.Start();
-        return Task.FromResult(new DapServer(listener, log, users, machine));
+        return Task.FromResult(new DapServer(listener, log, users, machine, terminals));
     }
 
     public async ValueTask DisposeAsync()
@@ -99,7 +105,7 @@ public sealed class DapServer : IAsyncDisposable
         public Dictionary<string, Cell> Cells { get; } = new(StringComparer.Ordinal);
     }
 
-    private sealed class Session(TcpClient client, Action<string> log, Users users, Machine machine) : DebugSession
+    private sealed class Session(TcpClient client, Action<string> log, Users users, Machine machine, TelnetServer? terminals) : DebugSession
     {
         private readonly Stream _stream = client.GetStream();
         private readonly Lock _sending = new();
@@ -114,13 +120,16 @@ public sealed class DapServer : IAsyncDisposable
         private string? _user, _attachedTo, _sourceRoot;
         private JsonObject? _launch;
         private DebugJob? _job;
+        // The job of the 5250 session a launched program runs in, once the session has taken it.
+        private volatile JobState? _sessionJob;
         private volatile bool _closed;
         private bool _added;
 
         public volatile bool StopOnEntry;
 
         public override bool Owns(IJobHost host) =>
-            _job is not null ? ReferenceEquals(host, _job) : _attachedTo is { } user && (user == "*ALL" || host.User.Equals(user, StringComparison.OrdinalIgnoreCase));
+            _sessionJob is { } inSession ? ReferenceEquals(host.State, inSession)
+            : _job is not null ? ReferenceEquals(host, _job) : _attachedTo is { } user && (user == "*ALL" || host.User.Equals(user, StringComparison.OrdinalIgnoreCase));
 
         // ---- what the engine says ----
 
@@ -430,6 +439,11 @@ public sealed class DapServer : IAsyncDisposable
             var parameters = string.Join(' ', (launch["parms"] as JsonArray ?? []).Select(p =>
                 p is JsonValue v && v.TryGetValue<decimal>(out var number) ? number.ToString(CultureInfo.InvariantCulture) : $"'{p?.ToString().Replace("'", "''")}'"));
             var command = $"CALL PGM({program.ToUpperInvariant()}){(parameters.Length > 0 ? $" PARM({parameters})" : "")}";
+            if (InSession(launch, program))
+            {
+                LaunchInSession(command);
+                return;
+            }
             new Thread(() =>
             {
                 OnOutput($"{command}\n");
@@ -453,6 +467,70 @@ public sealed class DapServer : IAsyncDisposable
                 Event("terminated");
             }) { IsBackground = true, Name = "debugged program" }.Start();
         }
+
+        /// <summary>Whether the program runs in the user's 5250 session: as the launch request says, or else when it has a display file.</summary>
+        private bool InSession(JsonObject launch, string program)
+        {
+            if (terminals is null) return false;
+            if (launch["terminal"] is JsonValue said && said.TryGetValue<bool>(out var terminal)) return terminal;
+            var slash = program.IndexOf('/');
+            try
+            {
+                var files = slash < 0 ? machine.FilesOf(null, program) : machine.FilesOf(program[..slash], program[(slash + 1)..]);
+                return files?.Any(f => !f.Database && f.Use == "display file") == true;
+            }
+            catch (Exception e) when (e is not OutOfMemoryException)
+            {
+                // Source that can't be read for its files: the program runs as one without screens.
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Runs the program in the user's 5250 session that waits at a command line, as though CALL were typed there, and
+        /// debugs that session's job until the program ends. With no such session, it asks VS Code to open the terminal
+        /// (the simI.needTerminal event) and waits for one.
+        /// </summary>
+        private void LaunchInSession(string command)
+        {
+            new Thread(() =>
+            {
+                var code = 0;
+                try
+                {
+                    var run = terminals!.RunInSessionAsync(_user!, command, job => _sessionJob = job, TimeSpan.Zero, _jobEnd.Token).GetAwaiter().GetResult();
+                    if (run is null)
+                    {
+                        OnOutput($"{command}\nIt has screens, so it runs in a 5250 session: waiting for one signed on as {_user} at a command line. Open the terminal and sign on.\n");
+                        Event("simI.needTerminal", new JsonObject { ["user"] = _user });
+                        run = terminals.RunInSessionAsync(_user!, command, job => _sessionJob = job, SessionWait, _jobEnd.Token).GetAwaiter().GetResult();
+                    }
+                    if (run is null)
+                    {
+                        Event("output", new JsonObject { ["category"] = "stderr", ["output"] = $"No 5250 session signed on as {_user} came to a command line: the program wasn't called.\n" });
+                        code = 1;
+                    }
+                    else
+                    {
+                        log($"debug: {_user} runs {command} in their session on {run.Device}");
+                        OnOutput($"{command}\nRunning in {_user}'s 5250 session on {run.Device}: its screens are there.\n");
+                        using var ending = _jobEnd.Token.Register(run.Cancel);
+                        var (ok, message) = run.Ended.GetAwaiter().GetResult();
+                        if (_jobEnd.IsCancellationRequested) OnOutput("The program was ended.\n");
+                        else if (message is { Length: > 0 }) Event("output", new JsonObject { ["category"] = ok ? "console" : "stderr", ["output"] = message + "\n" });
+                        code = ok ? 0 : 1;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                Event("exited", new JsonObject { ["exitCode"] = code });
+                Event("terminated");
+            }) { IsBackground = true, Name = "debugged program" }.Start();
+        }
+
+        /// <summary>How long a launch waits for a 5250 session to come to a command line.</summary>
+        private static readonly TimeSpan SessionWait = TimeSpan.FromMinutes(10);
 
         // ---- source files and programs ----
 

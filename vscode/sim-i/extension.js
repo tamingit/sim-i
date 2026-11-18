@@ -7,6 +7,7 @@
 const vscode = require("vscode");
 const path = require("path");
 const filesPanel = require("./filesPanel");
+const relatedView = require("./relatedView");
 
 /** The source types Sim i reads, by file extension. */
 const SOURCE = new Set([".rpgle", ".sqlrpgle", ".rpgleinc", ".dspf", ".prtf", ".pf", ".lf", ".sql", ".clle", ".clp", ".cmd", ".table", ".view", ".index", ".cpy", ".msgf"]);
@@ -19,7 +20,18 @@ function settings() {
   return {
     host: config.get("host") || "localhost", debugPort: config.get("debugPort") || 4711, webPort: config.get("webPort") || 8080,
     user: (config.get("user") || "").trim().toUpperCase(), uploadOnSave: config.get("uploadOnSave") !== false, sourceRoot: config.get("sourceRoot") || "",
+    siteUrl: (config.get("siteUrl") || "").trim().replace(/\/+$/, ""),
   };
+}
+
+/** Opens a page of Sim i's site in the browser: the terminal (GreenGlow), the profiles, receiving from an IBM i. */
+function openSite(page) {
+  const site = settings().siteUrl;
+  if (!site) {
+    vscode.window.showInformationMessage("Sim i: set simI.siteUrl to the address Sim i's site has in the browser (https://sim-i.example.com) to open its pages from here.");
+    return;
+  }
+  return vscode.env.openExternal(vscode.Uri.parse(site + page));
 }
 
 /** The folder laid out LIBRARY/FILE/member.ext: the setting, or the workspace folder the file is in. */
@@ -233,6 +245,7 @@ function activate(context) {
   secrets = context.secrets;
   diagnostics = vscode.languages.createDiagnosticCollection("sim-i");
   output = vscode.window.createOutputChannel("Sim i");
+  relatedView.register(context, uri => sourceRoot(uri));
   context.subscriptions.push(diagnostics, output,
     vscode.debug.registerDebugConfigurationProvider("sim-i", new Configurations()),
     vscode.debug.registerDebugAdapterDescriptorFactory("sim-i", new Adapter()),
@@ -244,6 +257,20 @@ function activate(context) {
         },
       }),
     }),
+    // A program with screens runs in a 5250 session: with none waiting at a command line, Sim i asks for the terminal.
+    vscode.debug.onDidReceiveDebugSessionCustomEvent(e => {
+      if (e.session.type === "sim-i" && e.event === "simI.needTerminal") openSite("/terminal/");
+    }),
+    vscode.commands.registerCommand("simI.openTerminal", () => openSite("/terminal/")),
+    // Data from a real IBM i: the open program's files (Files of This Program), or else a whole library (the Receive page).
+    vscode.commands.registerCommand("simI.copyData", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && [".rpgle", ".sqlrpgle"].includes(path.extname(editor.document.uri.fsPath).toLowerCase())) return vscode.commands.executeCommand("simI.programFiles", editor.document.uri);
+      return openSite("/receive");
+    }),
+    vscode.commands.registerCommand("simI.openProfiles", () => openSite("/profile")),
+    vscode.commands.registerCommand("simI.openReceive", () => openSite("/receive")),
+    terminalButton(),
     vscode.workspace.onDidSaveTextDocument(document => {
       if (settings().uploadOnSave && isSource(document.uri) && uploadPath(document.uri)) upload([document.uri], true);
     }),
@@ -280,6 +307,18 @@ function activate(context) {
       await vscode.workspace.getConfiguration("simI").update("user", "", vscode.ConfigurationTarget.Global);
       if (await credentials()) vscode.window.setStatusBarMessage("Sim i: signed on", 4000);
     }));
+}
+
+/** The status bar's way to the terminal, where programs with screens run. */
+function terminalButton() {
+  const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 0);
+  item.text = "$(terminal) Terminal";
+  item.tooltip = "Open the 5250 terminal (GreenGlow): programs with screens run there when you debug them";
+  item.command = "simI.openTerminal";
+  const show = () => (settings().siteUrl ? item.show() : item.hide());
+  show();
+  vscode.workspace.onDidChangeConfiguration(e => { if (e.affectsConfiguration("simI.siteUrl")) show(); });
+  return item;
 }
 
 function deactivate() {}

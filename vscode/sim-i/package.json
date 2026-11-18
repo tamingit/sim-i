@@ -75,6 +75,10 @@
                 "description": "Stop at the program's first statement.",
                 "default": false
               },
+              "terminal": {
+                "type": "boolean",
+                "description": "Run the program in your 5250 session that waits at a command line (true), or in a job of its own with DSPLY in the debug console (false). Left out, a program with a display file runs in the session."
+              },
               "host": {
                 "type": "string",
                 "description": "Sim i's host (default: the simI.host setting)."
@@ -204,6 +208,11 @@
           },
           "default": [],
           "description": "The libraries on the real IBM i to look for a program's files in, in order."
+        },
+        "simI.siteUrl": {
+          "type": "string",
+          "default": "",
+          "description": "The address Sim i's site has in the browser (https://sim-i.example.com), for opening the terminal, the profiles and Receive from here, and the terminal when a program with screens is debugged."
         }
       }
     },
@@ -224,6 +233,38 @@
       {
         "command": "simI.signOn",
         "title": "Sim i: Sign On (Change User or Password)"
+      },
+      {
+        "command": "simI.openTerminal",
+        "title": "Sim i: Open the Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "simI.openProfiles",
+        "title": "Sim i: Open Program Profiles"
+      },
+      {
+        "command": "simI.openReceive",
+        "title": "Sim i: Receive a Library from an IBM i"
+      },
+      {
+        "command": "simI.related.refresh",
+        "title": "Sim i: Read the Related Files Again",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "simI.related.showUse",
+        "title": "Go to Where It's Used Here",
+        "icon": "$(selection)"
+      },
+      {
+        "command": "simI.related.open",
+        "title": "Sim i: Open a Related File"
+      },
+      {
+        "command": "simI.copyData",
+        "title": "Sim i: Copy Data from an IBM i",
+        "icon": "$(cloud-download)"
       }
     ],
     "menus": {
@@ -232,6 +273,48 @@
           "command": "simI.programFiles",
           "when": "resourceExtname =~ /\\.(rpgle|sqlrpgle)$/i",
           "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "simI.copyData",
+          "when": "view == simI.related",
+          "group": "navigation@1"
+        },
+        {
+          "command": "simI.related.refresh",
+          "when": "view == simI.related",
+          "group": "navigation@2"
+        },
+        {
+          "command": "simI.openReceive",
+          "when": "view == simI.related"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "simI.related.showUse",
+          "when": "view == simI.related && viewItem == simIRelatedUse",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "simI.related.open",
+          "when": "false"
+        },
+        {
+          "command": "simI.related.showUse",
+          "when": "false"
+        }
+      ]
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "simI.related",
+          "name": "Related Files",
+          "contextualTitle": "Sim i"
         }
       ]
     }
