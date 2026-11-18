@@ -10,6 +10,7 @@
      A            UPWDEXP        4A  O  7 29
      A            UDESC         20A  O  7 38
      A            UDFTLIB       10A  O  7 59
+     A            UGRPPRF       10A  O  7 71
      A          R LIST                      SFLCTL(ROW)
      A                                      SFLSIZ(200) SFLPAG(12)
      A                                      OVERLAY
@@ -20,8 +21,8 @@
      A                                  1 34'Work with Users'
      A                                      DSPATR(HI)
      A                                  4  2'Type options, press Enter.'
-     A                                  5  2'2=Change   4=Delete'
-     A                                  6  2'Opt  User        Status    Expired  Description          Default lib'
+     A                                  5  2'2=Change   4=Delete   5=Members of a group'
+     A                                  6  2'Opt  User        Status    Expired  Description          Default lib Group'
      A                                      DSPATR(HI)
      A          R KEYS
      A                                 23  2'F3=Exit   F6=Create   F12=Cancel'
@@ -39,8 +40,8 @@
      A                                  5  2'Password  . . . . . .'
      A            UPWD          27A  B  5 25DSPATR(ND)
      A                                      CHECK(LC)
-     A  52                                  ERRMSG('A password is required' +
-     A                                      52)
+     A  52                                  ERRMSG('A password, or *NONE, is +
+     A                                      required' 52)
      A                                  6  2'Confirm password  . .'
      A            UPWD2         27A  B  6 25DSPATR(ND)
      A                                      CHECK(LC)
@@ -62,6 +63,24 @@
      A            UDFTLIB       10A  B 10 25
      A  56                                  ERRMSG('Library not found' 56)
      A                                 10 36'The library it works in first'
+     A                                 11  2'Group profile . . . .'
+     A            UGRPPRF       10A  B 11 25
+     A  57                                  ERRMSG('Group profile: *NONE, or +
+     A                                      another profile that has no group +
+     A                                      profile' 57)
+     A                                 11 36'*NONE, or the group it is in'
+     A                                 12  2'Supplemental groups .'
+     A            USUPGRP       55A  B 12 25
+     A  58                                  ERRMSG('Supplemental groups need a +
+     A                                      group profile, and each must be a +
+     A                                      profile with no group profile' 58)
+     A                                 13  2'Special authorities .'
+     A            USPCAUT       55A  B 13 25
+     A  59                                  ERRMSG('Special authorities are +
+     A                                      *NONE or *ALLOBJ *SECADM *JOBCTL +
+     A                                      *SPLCTL *SAVSYS *SERVICE *AUDIT +
+     A                                      *IOSYSCFG' 59)
+     A                                 14  4'Lists are separated by blanks. Password *NONE: nobody signs on as it.'
      A                                 23  2'Enter=Save   F12=Cancel'
      A          R CHGUSER
      A                                  1 31'Change User'
@@ -92,7 +111,25 @@
      A            UDFTLIB       10A  B 10 25
      A  56                                  ERRMSG('Library not found' 56)
      A                                 10 36'The library it works in first'
-     A                                 12  2'Leave the password blank to keep it.'
+     A                                 11  2'Group profile . . . .'
+     A            UGRPPRF       10A  B 11 25
+     A  57                                  ERRMSG('Group profile: *NONE, or +
+     A                                      another profile that has no group +
+     A                                      profile' 57)
+     A                                 11 36'*NONE, or the group it is in'
+     A                                 12  2'Supplemental groups .'
+     A            USUPGRP       55A  B 12 25
+     A  58                                  ERRMSG('Supplemental groups need a +
+     A                                      group profile, and each must be a +
+     A                                      profile with no group profile' 58)
+     A                                 13  2'Special authorities .'
+     A            USPCAUT       55A  B 13 25
+     A  59                                  ERRMSG('Special authorities are +
+     A                                      *NONE or *ALLOBJ *SECADM *JOBCTL +
+     A                                      *SPLCTL *SAVSYS *SERVICE *AUDIT +
+     A                                      *IOSYSCFG' 59)
+     A                                 14  4'Lists are separated by blanks. Password *NONE: nobody signs on as it.'
+     A                                 16  2'Leave the password blank to keep it.'
      A                                 23  2'Enter=Save   F12=Cancel'
      A          R CONFIRM
      A                                  1 32'Delete User'

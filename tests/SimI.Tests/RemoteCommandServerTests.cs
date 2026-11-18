@@ -37,15 +37,15 @@ public class RemoteCommandServerTests
         await client.RequestAsync(0x1001, [0, 0, 0x04, 0xB0, 0xF2, 0xF9, 0xF2, 0xF4, 0, 0, 0, 1]);
 
         // Data stream level 10: the command in UTF-16, after its CCSID.
-        var text = Encoding.BigEndianUnicode.GetBytes("QSYS/CHGUSRPRF USRPRF(X) PASSWORD(Hush1234)");
+        var text = Encoding.BigEndianUnicode.GetBytes("QSYS/SNDMSG MSG('Hush1234') TOUSR(QSYSOPR)");
         var reply = await client.RequestAsync(0x1002, [5], (0x1104, [0, 0, 0x04, 0xB0, .. text]));
 
         Assert.Equal(0x8002, RequestId(reply));
         Assert.Equal([0, 0, 0, 0], reply.AsSpan(20, 4).ToArray());
-        Assert.Equal(["CMD CHGUSRPRF"], server.Calls);
+        Assert.Equal(["CMD SNDMSG"], server.Calls);
         lock (lines)
         {
-            Assert.Contains(lines, l => l.Contains("command CHGUSRPRF"));
+            Assert.Contains(lines, l => l.Contains("command SNDMSG"));
             Assert.DoesNotContain(lines, l => l.Contains("Hush1234"));
         }
     }
@@ -222,6 +222,82 @@ public class RemoteCommandServerTests
 
         Assert.Equal([0xF2], Assert.Single(Parameters(reply)).Data); // EBCDIC '2': allowed ('1' is not allowed)
         lock (lines) Assert.Contains(lines, l => l.Contains("QSYS/QSYCKUFU") && l.Contains("QIBM_XE1_EXAMPLE allowed for PRTUSER"));
+    }
+
+    [Fact]
+    public async Task RetrieveUserInformationReportsGroupsAndSpecialAuthorities()
+    {
+        var users = new Users(
+            new UserProfile("PRTUSER", "Secret12")
+            {
+                GroupProfile = "GGADMIN",
+                SupplementalGroups = ["STAFF", "OPS"],
+                SpecialAuthorities = ["*JOBCTL", "*SECADM"],
+            },
+            new UserProfile("GGADMIN", Users.NoPassword));
+        await using var server = await RemoteCommandServer.StartAsync(users: users);
+        await using var client = await Client.SignOnAsync(server.Port, "PRTUSER", "Secret12");
+
+        // As GreenGlow Connect calls it: receiver 2048 (output, usage 12, no compression), its length, USRI0300,
+        // *CURRENT, and an error code of 16 bytes (in-out, usage 13).
+        var reply = await client.CallAsync("QSYRUSRI", "QSYS",
+            (2048, 12, []), (4, 11, BigEndian(2048)), (8, 11, Ebcdic.Encode("USRI0300")), (10, 11, Ebcdic.Encode("*CURRENT  ")),
+            (16, 13, [.. BigEndian(16), .. new byte[12]]));
+        Assert.Equal(0, BinaryPrimitives.ReadUInt16BigEndian(reply.AsSpan(20)));
+        var outputs = Parameters(reply);
+        var receiver = Padded(outputs[0].Data, 2048);
+        Assert.Equal(740, BinaryPrimitives.ReadInt32BigEndian(receiver));
+        Assert.Equal("PRTUSER", Ebcdic.Decode(receiver.AsSpan(8, 10)).Trim());
+        Assert.Equal("NYYNNNNNNNNNNNN", Ebcdic.Decode(receiver.AsSpan(83, 15)));
+        Assert.Equal("GGADMIN", Ebcdic.Decode(receiver.AsSpan(98, 10)).Trim());
+        var (offset, count) = (BinaryPrimitives.ReadInt32BigEndian(receiver.AsSpan(584)), BinaryPrimitives.ReadInt32BigEndian(receiver.AsSpan(588)));
+        Assert.Equal(2, count);
+        Assert.Equal(["STAFF", "OPS"], Enumerable.Range(0, count).Select(i => Ebcdic.Decode(receiver.AsSpan(offset + i * 10, 10)).Trim()));
+        Assert.Equal(0, BinaryPrimitives.ReadInt32BigEndian(Padded(outputs[1].Data, 16).AsSpan(4)));
+
+        // USRI0200 for another profile by name, as JTOpen sends it (usage 22): a group profile with none of its own.
+        reply = await client.CallAsync("QSYRUSRI", "QSYS",
+            (200, 22, []), (4, 11, BigEndian(200)), (8, 11, Ebcdic.Encode("USRI0200")), (10, 11, Ebcdic.Encode("GGADMIN   ")),
+            (16, 13, [.. BigEndian(16), .. new byte[12]]));
+        receiver = Padded(Parameters(reply)[0].Data, 200);
+        Assert.Equal("GGADMIN", Ebcdic.Decode(receiver.AsSpan(8, 10)).Trim());
+        Assert.Equal("*NONE", Ebcdic.Decode(receiver.AsSpan(43, 10)).Trim());
+        Assert.Equal(0, BinaryPrimitives.ReadInt32BigEndian(receiver.AsSpan(100)));
+    }
+
+    [Fact]
+    public async Task RetrieveUserInformationReportsAProfileItDoesntKnowInTheErrorCode()
+    {
+        await using var server = await RemoteCommandServer.StartAsync();
+        await using var client = await Client.SignOnAsync(server.Port, "PRTUSER", "Secret12");
+
+        var reply = await client.CallAsync("QSYRUSRI", "QSYS",
+            (2048, 12, []), (4, 11, BigEndian(2048)), (8, 11, Ebcdic.Encode("USRI0300")), (10, 11, Ebcdic.Encode("NOBODY    ")),
+            (16, 13, [.. BigEndian(16), .. new byte[12]]));
+        var error = Padded(Parameters(reply)[1].Data, 16);
+        Assert.Equal(15, BinaryPrimitives.ReadInt32BigEndian(error.AsSpan(4)));
+        Assert.Equal("CPF2204", Ebcdic.Decode(error.AsSpan(8, 7)));
+
+        // With no room for the error (bytes provided 0), the API signals it and the call fails.
+        reply = await client.CallAsync("QSYRUSRI", "QSYS",
+            (2048, 12, []), (4, 11, BigEndian(2048)), (8, 11, Ebcdic.Encode("USRI0300")), (10, 11, Ebcdic.Encode("NOBODY    ")),
+            (4, 13, new byte[4]));
+        Assert.Equal(0x0500, BinaryPrimitives.ReadUInt16BigEndian(reply.AsSpan(20)));
+    }
+
+    [Fact]
+    public async Task AProfileWithNoPasswordCantStartTheServer()
+    {
+        var users = new Users(new UserProfile("PRTUSER", "Secret12"), new UserProfile("GGADMIN", Users.NoPassword));
+        await using var server = await RemoteCommandServer.StartAsync(users: users);
+        Assert.Equal(0x00030010, await Client.StartServerAsync(server.Port, "GGADMIN", Users.NoPassword));
+    }
+
+    private static byte[] Padded(byte[] data, int length)
+    {
+        var padded = new byte[Math.Max(length, data.Length)];
+        data.CopyTo(padded, 0);
+        return padded;
     }
 
     [Fact]
