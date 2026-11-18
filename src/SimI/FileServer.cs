@@ -24,6 +24,10 @@
 // were checked against a real IBM i (datastream level 24): the replies are the ones it sent, byte
 // for byte where they matter to a client. The writing requests follow IBM's Toolbox for Java's
 // layouts, not yet checked against a real IBM i.
+// Text is kept as UTF-8, which is what Sim i's programs read: a file a client creates or replaces
+// tagged with another text CCSID (37, 367, 819, 1252, 1200, 13488) is converted to UTF-8 when it is
+// closed. A file that doesn't look like text in that CCSID (a NUL byte, broken UTF-16) is kept as
+// sent, as are UTF-8 (1208), binary (65535) and untagged ones.
 // It logs each request and path, never a file's contents.
 
 using System.Buffers.Binary;
@@ -98,6 +102,8 @@ public sealed class FileServer : HostServer
         var profile = await StartServerAsync(stream, id, ServerId, Users);
         if (profile is null) return;
         var open = new Dictionary<int, FileStream>();
+        // Files created or replaced with a text CCSID other than UTF-8: converted when closed.
+        var toUtf8 = new Dictionary<int, (string Host, int Ccsid)>();
         var next = 1;
         try
         {
@@ -122,13 +128,13 @@ public sealed class FileServer : HostServer
                         reply = ExchangeAttributes(correlation);
                         break;
                     case Open:
-                        (reply, what) = OpenFile(request, correlation, open, ref next);
+                        (reply, what) = OpenFile(request, correlation, open, toUtf8, ref next);
                         break;
                     case Read:
                         (reply, what) = ReadFile(request, correlation, open);
                         break;
                     case Close:
-                        (reply, what) = CloseFile(request, correlation, open);
+                        (reply, what) = CloseFile(request, correlation, open, toUtf8);
                         break;
                     case Write:
                         (reply, what) = WriteFile(request, correlation, open);
@@ -153,6 +159,7 @@ public sealed class FileServer : HostServer
         finally
         {
             foreach (var file in open.Values) await file.DisposeAsync();
+            foreach (var (host, ccsid) in toUtf8.Values) ConvertToUtf8(host, ccsid);
         }
     }
 
@@ -165,7 +172,8 @@ public sealed class FileServer : HostServer
         return Frame(ServerId, ExchangeReply, template, correlation, 0, (0x000A, new byte[] { PathCcsid >> 8, PathCcsid & 0xFF }));
     }
 
-    private (byte[] Reply, string What) OpenFile(byte[] request, int correlation, Dictionary<int, FileStream> open, ref int next)
+    private (byte[] Reply, string What) OpenFile(byte[] request, int correlation, Dictionary<int, FileStream> open,
+        Dictionary<int, (string Host, int Ccsid)> toUtf8, ref int next)
     {
         var templateLength = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(16));
         if (request.Length < 38) throw new InvalidDataException("short open");
@@ -211,6 +219,9 @@ public sealed class FileServer : HostServer
         }
         var handle = next++;
         open[handle] = file;
+        // The file data's CCSID at 28: a new or emptied text file in another CCSID becomes UTF-8 when closed.
+        var ccsid = BinaryPrimitives.ReadUInt16BigEndian(request.AsSpan(28));
+        if (file.CanWrite && (!exists || replace) && TextEncoding(ccsid) is not null) toUtf8[handle] = (host, ccsid);
         var info = new FileInfo(host);
 
         // The template as the IBM i sends it at level 16 and up (77 bytes): the handle at 22, an
@@ -449,14 +460,91 @@ public sealed class FileServer : HostServer
         return Frame(ServerId, ListReply, template, correlation, 0, (0x0002, Encoding.BigEndianUnicode.GetBytes(entry.Name)));
     }
 
-    private static (byte[] Reply, string What) CloseFile(byte[] request, int correlation, Dictionary<int, FileStream> open)
+    private static (byte[] Reply, string What) CloseFile(byte[] request, int correlation, Dictionary<int, FileStream> open,
+        Dictionary<int, (string Host, int Ccsid)> toUtf8)
     {
         if (request.Length < 26) throw new InvalidDataException("short close");
         var handle = BinaryPrimitives.ReadInt32BigEndian(request.AsSpan(22));
         var what = $"close handle {handle}";
         if (!open.Remove(handle, out var file)) return (ReturnCode(correlation, InvalidHandle), what);
         file.Dispose();
+        if (toUtf8.Remove(handle, out var text) && ConvertToUtf8(text.Host, text.Ccsid))
+            what += $" (converted from CCSID {text.Ccsid} to UTF-8)";
         return (Frame(ServerId, CloseReply, new byte[8], correlation), what);
+    }
+
+    /// <summary>The largest file converted to UTF-8; a larger one is kept as sent.</summary>
+    public const int MaxConvert = 64 << 20;
+
+    /// <summary>The encoding of a text CCSID other than UTF-8 that Sim i converts from, or null.</summary>
+    public static System.Text.Encoding? TextEncoding(int ccsid)
+    {
+        System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+        return ccsid switch
+        {
+            37 => EbcdicEncoding.Instance,
+            367 => System.Text.Encoding.ASCII,
+            819 => System.Text.Encoding.Latin1,
+            1252 => System.Text.Encoding.GetEncoding(1252),
+            1200 or 13488 => new UnicodeEncoding(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Rewrites a text file in a CCSID other than UTF-8 as UTF-8 (no byte order mark). Returns false,
+    /// leaving it as it is, when it isn't text in that CCSID (a NUL byte in a single-byte one, or
+    /// broken UTF-16), is too large, or is gone.
+    /// </summary>
+    public static bool ConvertToUtf8(string host, int ccsid)
+    {
+        var encoding = TextEncoding(ccsid);
+        if (encoding is null) return false;
+        try
+        {
+            var info = new FileInfo(host);
+            if (!info.Exists || info.Length > MaxConvert) return false;
+            var bytes = File.ReadAllBytes(host);
+            var wide = ccsid is 1200 or 13488;
+            if (wide ? bytes.Length % 2 != 0 : bytes.Contains((byte)0)) return false;
+            // A UTF-16 byte order mark isn't text.
+            var start = wide && bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF ? 2 : 0;
+            var text = encoding.GetString(bytes, start, bytes.Length - start);
+            File.WriteAllBytes(host, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(text));
+            return true;
+        }
+        catch (Exception e) when (e is DecoderFallbackException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>CCSID 37 (EBCDIC) as an Encoding, through Sim i's own table.</summary>
+    private sealed class EbcdicEncoding : System.Text.Encoding
+    {
+        public static readonly EbcdicEncoding Instance = new();
+
+        public override int GetByteCount(char[] chars, int index, int count) =>
+            Ebcdic.Encode(new string(chars, index, count)).Length;
+
+        public override int GetBytes(char[] chars, int charIndex, int charCount, byte[] bytes, int byteIndex)
+        {
+            var encoded = Ebcdic.Encode(new string(chars, charIndex, charCount));
+            encoded.CopyTo(bytes, byteIndex);
+            return encoded.Length;
+        }
+
+        public override int GetCharCount(byte[] bytes, int index, int count) => count;
+
+        public override int GetChars(byte[] bytes, int byteIndex, int byteCount, char[] chars, int charIndex)
+        {
+            Ebcdic.Decode(bytes.AsSpan(byteIndex, byteCount)).CopyTo(0, chars, charIndex, byteCount);
+            return byteCount;
+        }
+
+        public override int GetMaxByteCount(int charCount) => charCount;
+
+        public override int GetMaxCharCount(int byteCount) => byteCount;
     }
 
     /// <summary>A refusal: reply 8001, the return code at byte 22.</summary>
