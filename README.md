@@ -214,11 +214,11 @@ Docker:
 docker run --rm --env-file .env -e SIM_I_DATABASE="Host=db.example;Database=simi;Username=simi;Password=..." -v sim-i-certs:/certs \
   -p 127.0.0.1:2323:2323 -p 127.0.0.1:992:992 -p 127.0.0.1:8474:8474 -p 127.0.0.1:9474:9474 \
   -p 127.0.0.1:8475:8475 -p 127.0.0.1:9475:9475 -p 127.0.0.1:8476:8476 -p 127.0.0.1:9476:9476 \
-  -p 127.0.0.1:8473:8473 -p 127.0.0.1:9473:9473 -p 127.0.0.1:449:449 ghcr.io/tamingit/sim-i
+  -p 127.0.0.1:8473:8473 -p 127.0.0.1:9473:9473 -p 127.0.0.1:449:449 ghcr.io/tamingit/sim-i:prod
 ```
 
 - **Ports:** publish each port on the same number: the port mapper tells clients the ports inside the container.
-- **Database:** the image keeps everything in the PostgreSQL database `SIM_I_DATABASE` names (compose.yaml runs one beside it). To load source, mount a folder with a folder for each library, and name it with `--source-dir` (or `-e SIM_I_SOURCE_DIR=/source`, which also overrides a `.env` that names a folder on the host): `-v "$PWD/examples/customers:/source:ro" ... ghcr.io/tamingit/sim-i --source-dir /source`. The IFS is `/ifs`: mount a named volume there to keep it.
+- **Database:** the image keeps everything in the PostgreSQL database `SIM_I_DATABASE` names (compose.yaml runs one beside it). To load source, mount a folder with a folder for each library, and name it with `--source-dir` (or `-e SIM_I_SOURCE_DIR=/source`, which also overrides a `.env` that names a folder on the host): `-v "$PWD/examples/customers:/source:ro" ... ghcr.io/tamingit/sim-i:prod --source-dir /source`. The IFS is `/ifs`: mount a named volume there to keep it.
 - **Certificate:** the image keeps its certificate in `/certs`. The named volume keeps it from one run to the next, so clients only need to trust it once. Copy out the part to trust with `docker cp <container>:/certs/sim-i.crt .`. Use a named volume rather than a directory: Sim i runs as a non-root user, which can't write to a directory you mount.
 
 With the .NET 10 SDK:
@@ -290,16 +290,18 @@ GitHub Actions runs the tests and builds the image on every push.
 
 ## Releases
 
-Publishing a GitHub release from main runs the tests, then pushes the image to GitHub's container registry:
+`.github/workflows/release.yml` runs the tests, then builds the image and pushes it to GitHub's container registry, `ghcr.io/tamingit/sim-i`.
 
-| Release tag | Image tags |
+| What | Image tags |
 |---|---|
-| `vX.Y.Z-beta` or `vX.Y.Z-beta.N` | `ghcr.io/tamingit/sim-i:X.Y.Z-beta.N` and `:beta` |
-| `vX.Y.Z` | `ghcr.io/tamingit/sim-i:X.Y.Z` and `:latest` |
+| A published release `vX.Y.Z-beta` or `vX.Y.Z-beta.N` | `X.Y.Z-beta.N` and `beta` |
+| A published release `vX.Y.Z` | `X.Y.Z` and `prod` |
+| A push to any branch, such as `feature/login` | the branch name, `feature-login` (`/` becomes `-`), and `preview-sha-<commit>` |
 
 ```bash
 gh release create v0.1.0-beta.1 --target main --prerelease --generate-notes   # beta
-gh release create v0.1.0 --target main --generate-notes                       # stable
+gh release create v0.1.0 --target main --generate-notes                       # prod
+docker pull ghcr.io/tamingit/sim-i:feature-login                              # a branch's latest push
 ```
 
-Other tags, and releases whose commit isn't on main, are refused.
+Other release tags, and releases whose commit isn't on main, are refused. So is a branch whose name would be a release's tag (`prod`, `beta`, `latest`, `1.2.3`). Every night, preview images that haven't been updated for 30 days are deleted, unless a release also carries them. Running the workflow by hand (Actions, Release, Run workflow) lists what would be deleted; turn off `dry_run` to delete it.
