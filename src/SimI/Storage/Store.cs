@@ -600,6 +600,13 @@ public sealed partial class Store : IDisposable
             r => new Diagnostic(r.GetInt32(0), (Severity)r.GetInt32(1), r.GetString(2)),
             ("l", member.Library), ("f", member.File), ("n", member.Name));
 
+    /// <summary>What the last save of each of a library's members found, by its source file and name.</summary>
+    public IReadOnlyDictionary<(string File, string Name), IReadOnlyList<Diagnostic>> LibraryDiagnostics(string library) =>
+        Query($"SELECT file, name, line, severity, message FROM {Schema(library)}.qsim_diagnostic ORDER BY file, name, seq",
+                r => (File: r.GetString(0), Name: r.GetString(1), Diagnostic: new Diagnostic(r.GetInt32(2), (Severity)r.GetInt32(3), r.GetString(4))))
+            .GroupBy(d => (d.File, d.Name))
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<Diagnostic>)[.. g.Select(d => d.Diagnostic)]);
+
     // ---- objects ----
 
     public StoredObject SaveObject(string library, string name, string type, string attribute, string source)

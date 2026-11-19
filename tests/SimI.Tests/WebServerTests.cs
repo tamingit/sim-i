@@ -138,6 +138,30 @@ public class WebServerTests
     }
 
     [Fact]
+    public async Task TheDiagnosticsOfFilesAreWhatTheirMembersLastSaveFound()
+    {
+        var (machine, server, client) = await Started();
+        await using var _ = server;
+        using var __ = machine;
+        await client.PostAsJsonAsync("/api/signon", new { user = "PRTUSER", password = "Secret12" });
+        await client.PostAsync("/api/upload", Files(
+            ("src/APPLIB/QRPGLESRC/good.rpgle", "**FREE\ndsply 'hi';\n*inlr = *on;\n"),
+            ("src/APPLIB/QRPGLESRC/wrong.rpgle", "**FREE\ndcl-s n int(10);\nn = 'x';\n*inlr = *on;\n")));
+
+        // Only files with something found are in the answer: not one that's fine, one Sim i doesn't have, or one that isn't source.
+        var response = await client.PostAsJsonAsync("/api/diagnostics", new
+        {
+            paths = new[] { "src/APPLIB/QRPGLESRC/good.rpgle", "src/APPLIB/QRPGLESRC/wrong.rpgle", "src/APPLIB/QRPGLESRC/never.rpgle", "src/NOLIB/QRPGLESRC/x.rpgle", "src/README.md" },
+        });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = Assert.Single((await response.Content.ReadFromJsonAsync<JsonElement>()).EnumerateArray());
+        Assert.Equal("src/APPLIB/QRPGLESRC/wrong.rpgle", result.GetProperty("path").GetString());
+        Assert.Equal("error", result.GetProperty("status").GetString());
+        Assert.Equal(3, result.GetProperty("diagnostics")[0].GetProperty("line").GetInt32());
+        Assert.Contains("N is numeric", result.GetProperty("diagnostics")[0].GetProperty("message").GetString());
+    }
+
+    [Fact]
     public async Task SavingAMemberChecksAndCompilesIt()
     {
         var (machine, server, client) = await Started();

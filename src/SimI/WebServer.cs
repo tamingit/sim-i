@@ -381,7 +381,28 @@ public sealed class WebServer : IAsyncDisposable
             }
             await context.Response.WriteAsJsonAsync(results);
         }, changes: true));
+
+        // What the last save of each file's member found, for files named as an upload names them: the editor's
+        // Problems for all its source, not only what it has sent. A file with nothing found isn't in the answer.
+        _app.MapPost("/api/diagnostics", Authorized(async (context, user) =>
+        {
+            var request = await context.Request.ReadFromJsonAsync<DiagnosticsRequest>();
+            var library = machine.DefaultLibrary(user).ToUpperInvariant();
+            var libraries = new Dictionary<string, IReadOnlyDictionary<(string File, string Name), IReadOnlyList<Diagnostic>>>();
+            var results = new List<object>();
+            foreach (var path in request?.Paths ?? [])
+            {
+                if (MemberAt(path, library, "") is not { } at) continue;
+                if (!libraries.TryGetValue(at.Library, out var members))
+                    libraries[at.Library] = members = machine.Store.HasLibrary(at.Library) ? machine.Store.LibraryDiagnostics(at.Library) : new Dictionary<(string, string), IReadOnlyList<Diagnostic>>();
+                var found = members.GetValueOrDefault((at.File, at.Name), []).Where(d => d.Severity != Severity.Info).ToList();
+                if (found.Count > 0) results.Add(new { path, status = StatusOf(found), member = $"{at.Library}/{at.File}({at.Name})", diagnostics = found.Select(Json) });
+            }
+            await context.Response.WriteAsJsonAsync(results);
+        }));
     }
+
+    private sealed record DiagnosticsRequest(List<string>? Paths);
 
     // ---- receiving from a real IBM i ----
 
@@ -642,19 +663,27 @@ public sealed class WebServer : IAsyncDisposable
     /// </summary>
     private static (Member? Member, string? Problem) Uploaded(IFormFile upload, string library, string file)
     {
-        var parts = upload.FileName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (MemberAt(upload.FileName, library, file) is not { } at)
+            return (null, $"{Path.GetFileName(upload.FileName)}: the extension isn't one of .rpgle, .sqlrpgle, .rpgleinc, .dspf, .prtf, .pf, .lf, .sql, .clle, .clp or .cmd");
+        using var reader = new StreamReader(upload.OpenReadStream());
+        var source = reader.ReadToEnd().Replace("\r\n", "\n");
+        var member = MemberFrom(at.Library, at.File, at.Name, at.Type, source, out var problem);
+        return (member, problem);
+    }
+
+    /// <summary>The member a file's path names, as an upload reads it; null when it isn't source.</summary>
+    private static (string Library, string File, string Name, string Type)? MemberAt(string path, string library, string file)
+    {
+        var parts = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (parts.Count == 0) return null;
         var fileName = parts[^1];
         // A folder upload's paths start with the folder chosen.
         var folders = parts.Count > 2 ? parts.Skip(1).Take(parts.Count - 2).ToList() : [];
         // A text file is a TXT member only in a source file's folder (LIB/QTXTSRC/NOTES.TXT).
-        if (Machine.TypeForExtension(Path.GetExtension(fileName)) is not { } type || type == "TXT" && folders.Count < 2)
-            return (null, $"{fileName}: the extension isn't one of .rpgle, .sqlrpgle, .rpgleinc, .dspf, .prtf, .pf, .lf, .sql, .clle, .clp or .cmd");
+        if (Machine.TypeForExtension(Path.GetExtension(fileName)) is not { } type || type == "TXT" && folders.Count < 2) return null;
         var lib = folders.Count > 0 ? folders[0].ToUpperInvariant() : library;
         var srcFile = folders.Count > 1 ? folders[^1].ToUpperInvariant() : file.Length > 0 ? file.ToUpperInvariant() : Machine.DefaultFile(type);
-        using var reader = new StreamReader(upload.OpenReadStream());
-        var source = reader.ReadToEnd().Replace("\r\n", "\n");
-        var member = MemberFrom(lib, srcFile, Path.GetFileNameWithoutExtension(fileName), type, source, out var problem);
-        return (member, problem);
+        return (lib, srcFile, Path.GetFileNameWithoutExtension(fileName).Trim().ToUpperInvariant(), type);
     }
 
     private static Member? MemberFrom(string? library, string? file, string? name, string? type, string source, out string? problem)

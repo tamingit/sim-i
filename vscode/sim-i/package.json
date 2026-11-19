@@ -191,6 +191,11 @@
           "default": true,
           "description": "Send each source file to Sim i when it's saved: it's checked and compiled there, and what's found is listed under Problems."
         },
+        "simI.problemsOnStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "When VS Code starts, list under Problems what Sim i last found in every source file of the workspace (when the sign-on is saved)."
+        },
         "simI.remoteHost": {
           "type": "string",
           "default": "",
@@ -225,6 +230,11 @@
       {
         "command": "simI.uploadFile",
         "title": "Sim i: Send This File and Compile It"
+      },
+      {
+        "command": "simI.allProblems",
+        "title": "Sim i: Show Problems in All Files",
+        "icon": "$(warning)"
       },
       {
         "command": "simI.uploadFolder",
@@ -265,6 +275,59 @@
         "command": "simI.copyData",
         "title": "Sim i: Copy Data from an IBM i",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "simI.files.find",
+        "title": "Find Them on the IBM i",
+        "category": "Sim i",
+        "icon": "$(search)"
+      },
+      {
+        "command": "simI.files.copy",
+        "title": "Copy the Checked Files to Sim i",
+        "category": "Sim i",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "simI.files.withData",
+        "title": "Copy Without Records (Click: With Them)",
+        "category": "Sim i",
+        "icon": "$(circle-large-outline)"
+      },
+      {
+        "command": "simI.files.withoutData",
+        "title": "Copy With Records (Click: Without Them)",
+        "category": "Sim i",
+        "icon": "$(record)"
+      },
+      {
+        "command": "simI.files.cancel",
+        "title": "End the Copy",
+        "category": "Sim i",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "simI.files.refresh",
+        "title": "Read the Program's Files Again",
+        "category": "Sim i",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "simI.files.settings",
+        "title": "IBM i Settings",
+        "category": "Sim i",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "simI.files.filter",
+        "title": "Filter Its Records",
+        "category": "Sim i",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "simI.files.goto",
+        "title": "Go to Where It's Declared",
+        "category": "Sim i"
       }
     ],
     "menus": {
@@ -289,12 +352,51 @@
         {
           "command": "simI.openReceive",
           "when": "view == simI.related"
+        },
+        {
+          "command": "simI.files.find",
+          "when": "view == simI.files",
+          "group": "navigation@1"
+        },
+        {
+          "command": "simI.files.copy",
+          "when": "view == simI.files && simI.files.remote && !simI.files.copying",
+          "group": "navigation@2"
+        },
+        {
+          "command": "simI.files.withoutData",
+          "when": "view == simI.files && simI.files.remote && simI.files.withData",
+          "group": "navigation@3"
+        },
+        {
+          "command": "simI.files.withData",
+          "when": "view == simI.files && simI.files.remote && !simI.files.withData",
+          "group": "navigation@3"
+        },
+        {
+          "command": "simI.files.cancel",
+          "when": "view == simI.files && simI.files.copying",
+          "group": "navigation@4"
+        },
+        {
+          "command": "simI.files.refresh",
+          "when": "view == simI.files",
+          "group": "navigation@5"
+        },
+        {
+          "command": "simI.files.settings",
+          "when": "view == simI.files"
         }
       ],
       "view/item/context": [
         {
           "command": "simI.related.showUse",
           "when": "view == simI.related && viewItem == simIRelatedUse",
+          "group": "inline"
+        },
+        {
+          "command": "simI.files.filter",
+          "when": "view == simI.files && viewItem == simIFilter",
           "group": "inline"
         }
       ],
@@ -306,6 +408,14 @@
         {
           "command": "simI.related.showUse",
           "when": "false"
+        },
+        {
+          "command": "simI.files.filter",
+          "when": "false"
+        },
+        {
+          "command": "simI.files.goto",
+          "when": "false"
         }
       ]
     },
@@ -315,6 +425,22 @@
           "id": "simI.related",
           "name": "Related Files",
           "contextualTitle": "Sim i"
+        }
+      ],
+      "simI": [
+        {
+          "id": "simI.files",
+          "name": "Files of This Program",
+          "contextualTitle": "Sim i"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "simI",
+          "title": "Sim i",
+          "icon": "media/files.svg"
         }
       ]
     }

@@ -6,7 +6,7 @@
 
 const vscode = require("vscode");
 const path = require("path");
-const filesPanel = require("./filesPanel");
+const filesView = require("./filesView");
 const relatedView = require("./relatedView");
 
 /** The source types Sim i reads, by file extension. */
@@ -21,6 +21,7 @@ function settings() {
     host: config.get("host") || "localhost", debugPort: config.get("debugPort") || 4711, webPort: config.get("webPort") || 8080,
     user: (config.get("user") || "").trim().toUpperCase(), uploadOnSave: config.get("uploadOnSave") !== false, sourceRoot: config.get("sourceRoot") || "",
     siteUrl: (config.get("siteUrl") || "").trim().replace(/\/+$/, ""),
+    problemsOnStart: config.get("problemsOnStart") !== false,
   };
 }
 
@@ -151,6 +152,53 @@ function uploadPath(uri) {
   return ["src", ...relative.split(path.sep)].join("/");
 }
 
+/** What Sim i found in a file, as VS Code's diagnostics: by line, and a compile that failed with nothing found by line on its first. */
+function problems(result) {
+  const found = (result.diagnostics || []).map(d => {
+    const line = Math.max(0, (d.line || 1) - 1);
+    const severity = d.severity === "error" ? vscode.DiagnosticSeverity.Error : d.severity === "info" ? vscode.DiagnosticSeverity.Information : vscode.DiagnosticSeverity.Warning;
+    const diagnostic = new vscode.Diagnostic(new vscode.Range(line, 0, line, 200), d.message, severity);
+    diagnostic.source = "Sim i";
+    return diagnostic;
+  });
+  if (result.status === "error" && !found.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
+    const diagnostic = new vscode.Diagnostic(new vscode.Range(0, 0, 0, 200), result.message || "Not compiled.", vscode.DiagnosticSeverity.Error);
+    diagnostic.source = "Sim i";
+    found.push(diagnostic);
+  }
+  return found;
+}
+
+/**
+ * Every source file's problems, as Sim i last found them in its member: Problems lists the whole workspace, not only
+ * the files sent since VS Code started. Quiet (at startup), it asks for nothing: without a saved sign-on it does nothing.
+ */
+async function allProblems(quiet) {
+  if (quiet && !cookie && !(await credentials(false))) return;
+  const byPath = new Map();
+  for (const uri of (await vscode.workspace.findFiles("**/*", "**/{node_modules,.git}/**", 50000)).filter(isSource)) {
+    const name = uploadPath(uri);
+    if (name) byPath.set(name, uri);
+  }
+  const paths = [...byPath.keys()];
+  const found = new Map();
+  try {
+    for (let at = 0; at < paths.length; at += 5000) {
+      for (const result of await web("POST", "/api/diagnostics", JSON.stringify({ paths: paths.slice(at, at + 5000) }), "application/json")) found.set(result.path, result);
+    }
+  } catch (error) {
+    if (!quiet) vscode.window.showErrorMessage(`Sim i: ${error.message}`);
+    return;
+  }
+  for (const [name, uri] of byPath) {
+    if (found.has(name)) diagnostics.set(uri, problems(found.get(name)));
+    else diagnostics.delete(uri);
+  }
+  const errors = [...found.values()].filter(r => r.status === "error").length;
+  vscode.window.setStatusBarMessage(`Sim i: ${paths.length} files read, ${errors} in error, ${found.size - errors} with warnings`, 6000);
+  if (!quiet) vscode.commands.executeCommand("workbench.actions.view.problems");
+}
+
 /** Sends files to Sim i, which saves, checks and compiles them in the order they depend on each other, and shows what it found. */
 async function upload(uris, quiet) {
   const form = new FormData();
@@ -179,21 +227,7 @@ async function upload(uris, quiet) {
     counts[result.status] = (counts[result.status] || 0) + 1;
     const uri = byPath.get(result.path);
     output.appendLine(`${result.member || result.path}: ${result.status}${result.message ? " - " + result.message : ""}`);
-    if (!uri) continue;
-    const found = (result.diagnostics || []).map(d => {
-      const line = Math.max(0, (d.line || 1) - 1);
-      const severity = d.severity === "error" ? vscode.DiagnosticSeverity.Error : d.severity === "info" ? vscode.DiagnosticSeverity.Information : vscode.DiagnosticSeverity.Warning;
-      const diagnostic = new vscode.Diagnostic(new vscode.Range(line, 0, line, 200), d.message, severity);
-      diagnostic.source = "Sim i";
-      return diagnostic;
-    });
-    // A compile that failed with nothing found by line still shows on the file.
-    if (result.status === "error" && !found.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
-      const diagnostic = new vscode.Diagnostic(new vscode.Range(0, 0, 0, 200), result.message || "Not compiled.", vscode.DiagnosticSeverity.Error);
-      diagnostic.source = "Sim i";
-      found.push(diagnostic);
-    }
-    diagnostics.set(uri, found);
+    if (uri) diagnostics.set(uri, problems(result));
   }
   const only = results.length === 1 ? results[0] : null;
   const text = only ? `${only.member || only.path}: ${only.status === "ok" ? "compiled" : only.status}${only.status === "ok" ? "" : " - " + (only.message || "")}`
@@ -260,6 +294,11 @@ function activate(context) {
   diagnostics = vscode.languages.createDiagnosticCollection("sim-i");
   output = vscode.window.createOutputChannel("Sim i");
   relatedView.register(context, uri => sourceRoot(uri));
+  const files = filesView.register(context, {
+    web, libraryOf,
+    signedOn: async () => !!cookie || !!(await credentials(false)),
+    upload: async uri => (uploadPath(uri) ? (await upload([uri], true), true) : false),
+  }, { settings: remoteSettings, login: remoteLogin, forget: () => secrets.delete(remoteKey(remoteSettings())) }, output);
   context.subscriptions.push(diagnostics, output,
     vscode.debug.registerDebugConfigurationProvider("sim-i", new Configurations()),
     vscode.debug.registerDebugAdapterDescriptorFactory("sim-i", new Adapter()),
@@ -286,11 +325,12 @@ function activate(context) {
     vscode.commands.registerCommand("simI.openReceive", () => openSite("/receive")),
     terminalButton(),
     vscode.workspace.onDidSaveTextDocument(document => {
-      if (settings().uploadOnSave && isSource(document.uri) && uploadPath(document.uri)) upload([document.uri], true);
+      if (settings().uploadOnSave && isSource(document.uri) && uploadPath(document.uri)) upload([document.uri], true).then(() => files.saved(document.uri));
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration("simI")) cookie = null;
     }),
+    vscode.commands.registerCommand("simI.allProblems", () => allProblems(false)),
     vscode.commands.registerCommand("simI.uploadFile", uri => {
       const target = uri || (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri);
       if (target) return upload([target], false);
@@ -311,16 +351,15 @@ function activate(context) {
     }),
     vscode.commands.registerCommand("simI.programFiles", async uri => {
       const target = uri || (vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri);
-      if (!target || ![".rpgle", ".sqlrpgle"].includes(path.extname(target.fsPath).toLowerCase())) return vscode.window.showInformationMessage("Sim i: open an RPG source file to see its program's files.");
-      // Sim i reads the files from the member, so it has to be there as it is here.
-      if (uploadPath(target)) await upload([target], true);
-      return filesPanel.show(context, target, { web, libraryOf, recompile: () => (uploadPath(target) ? upload([target], true) : undefined) }, { settings: remoteSettings, login: remoteLogin, forget: () => secrets.delete(remoteKey(remoteSettings())) });
+      if (!files.isRpg(target)) return vscode.window.showInformationMessage("Sim i: open an RPG source file to see its program's files.");
+      return files.open(target);
     }),
     vscode.commands.registerCommand("simI.signOn", async () => {
       await forget(settings().user);
       await vscode.workspace.getConfiguration("simI").update("user", "", vscode.ConfigurationTarget.Global);
       if (await credentials()) vscode.window.setStatusBarMessage("Sim i: signed on", 4000);
     }));
+  if (settings().problemsOnStart) allProblems(true);
 }
 
 /** The status bar's way to the terminal, where programs with screens run. */
