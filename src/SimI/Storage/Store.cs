@@ -45,10 +45,13 @@ public sealed record SpoolRecord(long Id, string Name, string User, int Pages, i
 /// One user profile as the table QSIM_USER keeps it. Status is *ENABLED or *DISABLED, PasswordExpired *YES or *NO; DefaultLibrary (DFTLIB) is
 /// the library the user's names are looked for in first, and new source goes to. GroupProfile (GRPPRF) is a user profile or *NONE;
 /// SupplementalGroups (SUPGRPPRF) up to 15 more, separated by blanks; SpecialAuthorities (SPCAUT) such as *SECADM, separated by blanks,
-/// or *NONE. A password of *NONE can't sign on, as a group profile's usually can't.
+/// or *NONE. A password of *NONE can't sign on, as a group profile's usually can't. InitialProgram (INLPGM) is the program
+/// a 5250 sign-on calls, LIB/PGM or PGM, or *NONE; InitialMenu (INLMNU) is MAIN, the main menu, or *SIGNOFF, which signs
+/// off when the initial program ends.
 /// </summary>
 public sealed record UserRow(string User, string Password, string Status, string PasswordExpired, string Text, string DefaultLibrary = "QGPL",
-    string GroupProfile = "*NONE", string SupplementalGroups = "", string SpecialAuthorities = "*NONE");
+    string GroupProfile = "*NONE", string SupplementalGroups = "", string SpecialAuthorities = "*NONE",
+    string InitialProgram = "*NONE", string InitialMenu = "MAIN");
 
 /// <summary>
 /// An object made from a member: type *PGM or *FILE, with the source it was made from. Its attribute is
@@ -272,7 +275,13 @@ public sealed partial class Store : IDisposable
         ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS grpprf TEXT NOT NULL DEFAULT '*NONE';
         ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS supgrpprf TEXT NOT NULL DEFAULT '';
         ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS spcaut TEXT NOT NULL DEFAULT '*NONE';
+        ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS inlpgm TEXT NOT NULL DEFAULT '*NONE';
+        ALTER TABLE qgpl.qsim_user ADD COLUMN IF NOT EXISTS inlmnu TEXT NOT NULL DEFAULT 'MAIN';
         CREATE TABLE IF NOT EXISTS qgpl.qsim_library (name TEXT NOT NULL PRIMARY KEY);
+        -- Whether the library's initial.json has run. The libraries there before this column was are counted as done;
+        -- one made after it starts as not, and is initialized when its source folder has an initial.json.
+        ALTER TABLE qgpl.qsim_library ADD COLUMN IF NOT EXISTS initialized BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE qgpl.qsim_library ALTER COLUMN initialized SET DEFAULT FALSE;
         CREATE TABLE IF NOT EXISTS qgpl.sysdummy1 (ibmreqd CHAR(1) NOT NULL);
         INSERT INTO qgpl.sysdummy1 SELECT 'Y' WHERE NOT EXISTS (SELECT 1 FROM qgpl.sysdummy1);
         CREATE OR REPLACE VIEW sysibm.sysdummy1 AS SELECT ibmreqd FROM qgpl.sysdummy1;
@@ -387,6 +396,14 @@ public sealed partial class Store : IDisposable
             return true;
         }
     }
+
+    /// <summary>Whether the library's initial.json has run (or it was there before Sim i kept track). False for a library that isn't.</summary>
+    public bool IsInitialized(string library) =>
+        Query("SELECT initialized FROM qgpl.qsim_library WHERE name = @n", r => r.GetBoolean(0), ("n", library.ToUpperInvariant())).FirstOrDefault();
+
+    /// <summary>Notes that the library's initial.json has run, so it isn't run again.</summary>
+    public void MarkInitialized(string library) =>
+        Run("UPDATE qgpl.qsim_library SET initialized = TRUE WHERE name = @n", ("n", library.ToUpperInvariant()));
 
     /// <summary>Takes the library away, with everything in it. False when there's no such library. QGPL can't be deleted.</summary>
     public bool DeleteLibrary(string name)
@@ -623,10 +640,11 @@ public sealed partial class Store : IDisposable
 
     // ---- users ----
 
-    private const string UserColumns = "username, password, status, pwdexp, text, dftlib, grpprf, supgrpprf, spcaut";
+    private const string UserColumns = "username, password, status, pwdexp, text, dftlib, grpprf, supgrpprf, spcaut, inlpgm, inlmnu";
 
     private static UserRow ReadUser(NpgsqlDataReader r) =>
-        new(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6), r.GetString(7), r.GetString(8));
+        new(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6), r.GetString(7), r.GetString(8),
+            r.GetString(9), r.GetString(10));
 
     /// <summary>Every user profile, by name.</summary>
     public IReadOnlyList<UserRow> UserRows() => Query($"SELECT {UserColumns} FROM qgpl.qsim_user ORDER BY username", ReadUser);
@@ -637,12 +655,13 @@ public sealed partial class Store : IDisposable
     /// <summary>Adds the user, or replaces the one of that name.</summary>
     public void SaveUser(UserRow user) =>
         Run($"""
-            INSERT INTO qgpl.qsim_user ({UserColumns}) VALUES (@u, @p, @s, @e, @t, @d, @g, @sg, @sa)
+            INSERT INTO qgpl.qsim_user ({UserColumns}) VALUES (@u, @p, @s, @e, @t, @d, @g, @sg, @sa, @ip, @im)
             ON CONFLICT (username) DO UPDATE SET password = excluded.password, status = excluded.status, pwdexp = excluded.pwdexp,
-                text = excluded.text, dftlib = excluded.dftlib, grpprf = excluded.grpprf, supgrpprf = excluded.supgrpprf, spcaut = excluded.spcaut
+                text = excluded.text, dftlib = excluded.dftlib, grpprf = excluded.grpprf, supgrpprf = excluded.supgrpprf, spcaut = excluded.spcaut,
+                inlpgm = excluded.inlpgm, inlmnu = excluded.inlmnu
             """,
             ("u", user.User), ("p", user.Password), ("s", user.Status), ("e", user.PasswordExpired), ("t", user.Text), ("d", user.DefaultLibrary),
-            ("g", user.GroupProfile), ("sg", user.SupplementalGroups), ("sa", user.SpecialAuthorities));
+            ("g", user.GroupProfile), ("sg", user.SupplementalGroups), ("sa", user.SpecialAuthorities), ("ip", user.InitialProgram), ("im", user.InitialMenu));
 
     /// <summary>Removes the user; false when there is none of that name.</summary>
     public bool DeleteUser(string name)

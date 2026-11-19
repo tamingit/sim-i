@@ -20,7 +20,8 @@
 //     and the spooled files.
 // --source-dir reads a folder of source at start-up, with a folder for each library (MYLIB/QRPGLESRC/prog.rpgle;
 //     files directly in it go to QGPL): each member that's new or changed is saved, checked and created
-//     (.rpgle, .sqlrpgle, .dspf, .sql), and what Sim i can't run is logged by line.
+//     (.rpgle, .sqlrpgle, .dspf, .sql), and what Sim i can't run is logged by line. Then a library that's new runs the
+//     initial.json in its folder, once: users, commands and CSV data (see Initialization.cs).
 // --check does that without creating anything or starting a server; exit code 3 when something isn't supported.
 // --web-port also runs the web source editor: sign on with a user profile to edit, upload and compile source.
 // --debug-port also runs the debug server: VS Code (with the extension in vscode/) sets breakpoints in RPG and steps through it.
@@ -76,7 +77,12 @@ try
         Console.WriteLine("no user can sign on: set SIM_I_DEVELOPER_USER, or SIM_I_USER for the test user, in the settings (see .env.example)");
     if (users.Developer is { } developer)
         Console.WriteLine($"developer: {developer}, in the administrators' group {users.AdminGroup}: only its members use the web interface");
-    if (options.SourceDir is not null) machine.Import(options.SourceDir, Log);
+    if (options.SourceDir is not null)
+    {
+        machine.Import(options.SourceDir, Log);
+        // A library new to Sim i runs its initial.json, once, as the developer unless it names someone.
+        machine.Initialize(options.SourceDir, users.Developer ?? "QSECOFR", Log);
+    }
     var certificate = options.AnyTls
         ? Tls.LoadOrCreate(options.TlsCert, Tls.Names(options.Bind, options.ExtraTlsNames), Log)
         : null;

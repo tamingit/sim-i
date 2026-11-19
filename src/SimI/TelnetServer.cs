@@ -392,6 +392,9 @@ public sealed class TelnetServer : IAsyncDisposable
             await SendAsync(Telnet.EncodeSubnegotiation(TelnetOption.TerminalType, [1]), "SB TERMINAL-TYPE SEND");
         }
 
+        // Set when the initial program of a profile with INLMNU(*SIGNOFF) has ended: the session closes, as SIGNOFF closes it.
+        var signedOff = false;
+
         // Shows what a running program sends until it waits for the user (true) or has ended (false).
         async Task<bool> PumpAsync()
         {
@@ -405,6 +408,22 @@ public sealed class TelnetServer : IAsyncDisposable
                     Log($"#{id} program ended{(next.Failed ? " in error" : "")}");
                     session.Run?.Finish(!next.Failed, next.Message);
                     session.Run = null;
+                    if (session.SignOffAfter)
+                    {
+                        session.SignOffAfter = false;
+                        if (!next.Failed)
+                        {
+                            Log($"#{id} sign-off: {session.User}'s initial program ended (INLMNU(*SIGNOFF))");
+                            signedOff = true;
+                            return false;
+                        }
+                        // One that failed leaves the sign-on screen, saying why, rather than closing without a word.
+                        Log($"#{id} {session.User}'s initial program ended in error: back to the sign-on screen");
+                        session.User = "";
+                        screen = Screen.SignOn;
+                        await SendAsync(Show(screen, next.Message, session), $"screen {screen}");
+                        return false;
+                    }
                     screen = session.Panel is null ? Screen.Main : Screen.Panel;
                     await SendAsync(Show(screen, next.Message, session), $"screen {screen}");
                     return false;
@@ -446,6 +465,7 @@ public sealed class TelnetServer : IAsyncDisposable
                     if (session.Job is not null)
                     {
                         await PumpAsync();
+                        if (signedOff) return device;
                     }
                     else
                     {
@@ -463,6 +483,7 @@ public sealed class TelnetServer : IAsyncDisposable
                 if (await Task.WhenAny(reading, programEvent) == programEvent)
                 {
                     await PumpAsync();
+                    if (signedOff) return device;
                     continue;
                 }
             }
@@ -560,13 +581,18 @@ public sealed class TelnetServer : IAsyncDisposable
                         {
                             running.Reply(reply.Input);
                             await PumpAsync();
+                            if (signedOff) return device;
                         }
                         break;
                     case TelnetEvent.Record r when started:
                         var (next, message) = HandleRecord(r.Data, screen, session);
                         if (next is null) return device;
                         screen = next.Value;
-                        if (session.Job is not null) await PumpAsync();
+                        if (session.Job is not null)
+                        {
+                            await PumpAsync();
+                            if (signedOff) return device;
+                        }
                         else await SendAsync(Show(screen, message, session), $"screen {screen}");
                         break;
                 }
@@ -720,6 +746,9 @@ public sealed class TelnetServer : IAsyncDisposable
         /// <summary>The program running, when one is.</summary>
         public InteractiveJob? Job { get; set; }
 
+        /// <summary>While the initial program of a profile with INLMNU(*SIGNOFF) runs: its end signs off.</summary>
+        public bool SignOffAfter { get; set; }
+
         /// <summary>The program the debugger asked this session to run, while it runs.</summary>
         public SessionRun? Run { get; set; }
 
@@ -792,7 +821,7 @@ public sealed class TelnetServer : IAsyncDisposable
                 case SignOnResult.SignedOn:
                     Log($"sign-on by {user}");
                     session.User = user;
-                    return (Screen.Main, null);
+                    return SignedOn(session, null);
                 case SignOnResult.UnknownUser:
                     Log($"sign-on rejected: no user {user}");
                     return (Screen.SignOn, $"User {user} does not exist.");
@@ -832,7 +861,7 @@ public sealed class TelnetServer : IAsyncDisposable
             _users.NoteSignOn(changing);
             session.User = changing.User;
             session.Changing = null;
-            return (Screen.Main, "Password changed successfully.");
+            return SignedOn(session, "Password changed successfully.");
         }
 
         if (screen == Screen.Wide)
@@ -901,6 +930,27 @@ public sealed class TelnetServer : IAsyncDisposable
             if (text.Length > 0) return Command(text, session);
         }
         return (Screen.Main, null);
+    }
+
+    /// <summary>
+    /// What follows a sign-on, as the user profile says: its initial program (INLPGM), called as the session's job, then
+    /// the main menu, or with INLMNU(*SIGNOFF) the sign-off. No initial program shows the main menu, or signs off at once
+    /// with INLMNU(*SIGNOFF), as an IBM i does.
+    /// </summary>
+    private (Screen? Next, string? Message) SignedOn(SignOnSession session, string? message)
+    {
+        var profile = _machine.Store.FindUser(session.User);
+        var program = profile?.InitialProgram ?? "*NONE";
+        var signOff = profile?.InitialMenu == "*SIGNOFF";
+        if (program == "*NONE")
+        {
+            if (!signOff) return (Screen.Main, message);
+            Log($"sign-off: {session.User} has no initial program and INLMNU(*SIGNOFF)");
+            return (null, null);
+        }
+        Log($"initial program {program} for {session.User}");
+        session.SignOffAfter = signOff;
+        return Command($"CALL {program}", session);
     }
 
     /// <summary>

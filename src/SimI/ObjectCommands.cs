@@ -113,7 +113,19 @@ public sealed partial class Machine
         var quote = command.Value("STRDLM", -1) is { } q ? Unquoted(q) : "\"";
         if (quote.Equals("*NONE", StringComparison.OrdinalIgnoreCase)) quote = "";
         var skip = int.TryParse(command.Value("FROMRCD", -1)?.Trim(), out var fromRecord) && fromRecord > 1 ? fromRecord - 1 : 0;
-        if (command.Value("MBROPT", -1)?.Trim().ToUpperInvariant() == "*REPLACE" && Sql($"DELETE FROM {to.Table}") is { } cleared) return Fail(cleared, "CPF2817");
+        return CopyDelimited(text, path, to, command.Value("MBROPT", -1)?.Trim().ToUpperInvariant() == "*REPLACE", skip, field, quote);
+    }
+
+    /// <summary>
+    /// Delimited records (<paramref name="text"/>, read from <paramref name="from"/>) into a file, field by field in the
+    /// file's order: added, or in place of what's there when <paramref name="replace"/>, after skipping <paramref name="skip"/>
+    /// lines. CPYFRMIMPF uses it, and so does a library's initial.json.
+    /// </summary>
+    internal CommandResult CopyDelimited(string text, string from, DatabaseFile to, bool replace, int skip = 0, string field = ",", string quote = "\"")
+    {
+        CommandResult Fail(string message, string id) => new(false, message, MessageId: id);
+        var path = from;
+        if (replace && Sql($"DELETE FROM {to.Table}") is { } cleared) return Fail(cleared, "CPF2817");
         var columns = to.Fields.Where(c => c.Expression is null).ToList();
         var copied = 0;
         foreach (var line in text.Replace("\r\n", "\n").Split('\n').Skip(skip))

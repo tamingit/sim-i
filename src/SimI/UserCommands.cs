@@ -1,7 +1,8 @@
 // The user profile commands: CRTUSRPRF, CHGUSRPRF, DLTUSRPRF and DSPUSRPRF, on the users in
 // QSIM_USER, with an IBM i's rules for group profiles. A group profile is a user profile that
 // others name as their group (GRPPRF) or a supplemental group (SUPGRPPRF); it usually has
-// PASSWORD(*NONE), so nobody signs on as it. Sim i checks no authority: anyone may run them.
+// PASSWORD(*NONE), so nobody signs on as it. INLPGM is the program a 5250 sign-on calls, and INLMNU(*SIGNOFF) signs off
+// when it ends (MAIN shows the main menu). Sim i checks no authority: anyone may run them.
 
 namespace SimI;
 
@@ -74,7 +75,7 @@ public sealed partial class Machine
                     $"User profile {name}: status {existing.Status}, password {(existing.Password == Users.NoPassword ? "*NONE" : "set")}" +
                     $"{(existing.PasswordExpired == "*YES" ? " (expired)" : "")}, group profile {existing.GroupProfile}, " +
                     $"supplemental groups {(supplemental.Length == 0 ? "*NONE" : supplemental)}, special authorities {existing.SpecialAuthorities}, " +
-                    $"current library {existing.DefaultLibrary}.");
+                    $"current library {existing.DefaultLibrary}, initial program {existing.InitialProgram}, initial menu {existing.InitialMenu}.");
             }
         }
 
@@ -86,7 +87,7 @@ public sealed partial class Machine
         [.. Store.UserRows().Where(u => u.GroupProfile == group || Users.Names(u.SupplementalGroups).Contains(group)).Select(u => u.User)];
 
     /// <summary>
-    /// Applies the command's STATUS, PWDEXP, TEXT, CURLIB, GRPPRF, SUPGRPPRF and SPCAUT to the row and saves it,
+    /// Applies the command's STATUS, PWDEXP, TEXT, CURLIB, INLPGM, INLMNU, GRPPRF, SUPGRPPRF and SPCAUT to the row and saves it,
     /// or says what's wrong. The rules are an IBM i's: a group profile is another profile that has no group
     /// itself, supplemental groups need a group profile, and there are at most 15 of them.
     /// </summary>
@@ -111,6 +112,22 @@ public sealed partial class Machine
             library = library is "*CRTDFT" or "*SAME" ? (library == "*CRTDFT" ? Store.Current : row.DefaultLibrary) : library;
             if (!Store.HasLibrary(library)) return Fail($"Library {library} not found.", "CPF2110");
             row = row with { DefaultLibrary = library };
+        }
+        if (Keyword("INLPGM")?.ToUpperInvariant().Replace(" ", "") is { } program && program != "*SAME")
+        {
+            // LIB/PGM or PGM (*LIBL/PGM: found in the library list). The program needn't exist yet, as on an IBM i:
+            // a sign-on finds out.
+            var (programLibrary, programName) = Qualified(program);
+            if (program != "*NONE" && (!IsName(programName) || programLibrary is not null && !Store.IsLibraryName(programLibrary)))
+                return Fail($"{program} isn't a program: give LIB/PGM, PGM or *NONE.");
+            row = row with { InitialProgram = program == "*NONE" ? program : programLibrary is null ? programName : $"{programLibrary}/{programName}" };
+        }
+        if (Keyword("INLMNU")?.ToUpperInvariant().Replace(" ", "") is { } menu && menu != "*SAME")
+        {
+            // Sim i has one menu, the main menu; *SIGNOFF signs off when the initial program ends.
+            menu = menu is "*LIBL/MAIN" or "QSYS/MAIN" ? "MAIN" : menu;
+            if (menu is not ("MAIN" or "*SIGNOFF")) return Fail($"Menu {menu} not found: give MAIN or *SIGNOFF.", "CPF2105");
+            row = row with { InitialMenu = menu };
         }
         if (Keyword("SPCAUT")?.ToUpperInvariant() is { } authorities)
         {

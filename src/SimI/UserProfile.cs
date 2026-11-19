@@ -207,7 +207,7 @@ public sealed class Users
             store.SaveUser(new UserRow(profile.User, profile.Password, profile.Disabled ? "*DISABLED" : "*ENABLED",
                 profile.PasswordExpired ? "*YES" : "*NO", existing?.Text is { Length: > 0 } kept ? kept : text,
                 existing?.DefaultLibrary ?? Store.Current, existing?.GroupProfile ?? "*NONE", existing?.SupplementalGroups ?? "",
-                existing?.SpecialAuthorities ?? "*NONE"));
+                existing?.SpecialAuthorities ?? "*NONE", existing?.InitialProgram ?? "*NONE", existing?.InitialMenu ?? "MAIN"));
         }
         var (developer, adminGroup) = DeveloperFrom(settings, defaults);
         if (developer is not null && adminGroup is not null)
@@ -216,13 +216,15 @@ public sealed class Users
             // IBM i, a group profile has no group of its own.
             var group = store.FindUser(adminGroup);
             store.SaveUser(new UserRow(adminGroup, NoPassword, "*ENABLED", "*NO", group?.Text is { Length: > 0 } groupText ? groupText : "Sim i administrators",
-                group?.DefaultLibrary ?? Store.Current, "*NONE", "", string.Join(' ', SpecialAuthorityNames)));
+                group?.DefaultLibrary ?? Store.Current, "*NONE", "", string.Join(' ', SpecialAuthorityNames),
+                group?.InitialProgram ?? "*NONE", group?.InitialMenu ?? "MAIN"));
             // The developer: its name and password from the settings, the administrators' group as its group profile, and
             // the rest kept as the table has it (a supplemental group can't be its group profile too).
             var existing = store.FindUser(developer.User);
             store.SaveUser(new UserRow(developer.User, developer.Password, "*ENABLED", "*NO",
                 existing?.Text is { Length: > 0 } kept ? kept : "Developer", existing?.DefaultLibrary ?? Store.Current, adminGroup,
-                string.Join(' ', Names(existing?.SupplementalGroups ?? "").Where(g => g != adminGroup)), existing?.SpecialAuthorities ?? "*NONE"));
+                string.Join(' ', Names(existing?.SupplementalGroups ?? "").Where(g => g != adminGroup)), existing?.SpecialAuthorities ?? "*NONE",
+                existing?.InitialProgram ?? "*NONE", existing?.InitialMenu ?? "MAIN"));
         }
         return new Users(store, defaults._main) { Developer = developer?.User, AdminGroup = adminGroup };
     }
