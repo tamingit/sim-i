@@ -159,6 +159,32 @@ public class FixedFormTests
     }
 
     [Fact]
+    public void ExternalSubfieldsAreRenamedAndAProcedureIsCalledWithoutParentheses()
+    {
+        using var machine = Machine.Open();
+        var job = new BatchJob("PRTUSER", CancellationToken.None);
+        Assert.True(machine.Run("RUNSQL SQL('create table qgpl.dc11 (compny char(3) not null, divnam char(10) not null)')", job).Ok);
+        var (shown, error) = Run(machine, "EXTFLDS",
+        [
+            "     D DC11DS        E DS                  EXTNAME(DC11)",
+            "     D  DC11CO       E                     EXTFLD(COMPNY)",
+            "     D  DIVNAM       E                     INZ('North')",
+            "     D QQFENV          PR            10I 0 Extproc('QqfEnvironment')",
+            "     D RC              S             10I 0",
+            "      * Check for web environment",
+            "     C                   EVAL      DC11CO = '001'",
+            "     C                   EVAL      RC = QQFENV",
+            C("DSPLY", factor1: "DC11CO"),
+            C("DSPLY", factor1: "DIVNAM"),
+            C("DSPLY", factor1: "DC11DS"),
+            C("DSPLY", factor1: "RC"),
+            C("SETON", hi: "LR"),
+        ]);
+        Assert.Null(error);
+        Assert.Equal(["001", "North", "001North", "0"], shown);
+    }
+
+    [Fact]
     public void InputSpecsRenameFieldsAndSqlRunsInFixedForm()
     {
         using var machine = Machine.Open();

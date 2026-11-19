@@ -272,9 +272,25 @@ internal sealed class RpgChecker
                     };
                 }
             }
+            // Whether the external fields are known (a missing file or table is reported already).
+            var externals = sym.Fields.Count > 0;
             foreach (var field in variable.Type.Fields ?? [])
             {
                 if (field.Name.Length == 0) continue;
+                if (field.Type.ExtFld is { } extFld)
+                {
+                    // EXTFLD: an external field, renamed (the prefix isn't put on it) or with an INZ of its own.
+                    if (!externals) continue;
+                    var key = extFld.Length > 0 ? Named(extFld) : sym.Fields.ContainsKey(field.Name) ? field.Name : Named(field.Name);
+                    if (!sym.Fields.Remove(key, out var external))
+                    {
+                        Error($"{field.Name} EXTFLD: the structure has no external field {(extFld.Length > 0 ? extFld : field.Name)}", field.Line);
+                        continue;
+                    }
+                    if (sym.Fields.ContainsKey(field.Name)) Error($"{field.Name} is defined more than once", field.Line);
+                    sym.Fields[field.Name] = new Sym(field.Name, Kind.Variable, field.Line) { Cat = external.Cat, Inz = field.Inz, Home = scope, Completed = true };
+                    continue;
+                }
                 if (sym.Fields.ContainsKey(field.Name)) Error($"{field.Name} is defined more than once", field.Line);
                 sym.Fields[field.Name] = Variable(field, scope);
             }
@@ -896,8 +912,8 @@ internal sealed class RpgChecker
                 switch (sym.Kind)
                 {
                     case Kind.Procedure:
-                        Error($"{name} is a procedure: in an expression, call it as {name}()");
-                        return Cat.Unknown;
+                        // A procedure's name alone, as with empty parentheses: a call with no parameters.
+                        return Arguments(sym, []);
                     case Kind.Format or Kind.File:
                         Error($"{name} is a {What(sym)}, not a value");
                         return Cat.Unknown;

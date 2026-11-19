@@ -71,7 +71,7 @@ public class RpgCheckTests
     [InlineData("dcl-s s char(5);|bump(s);|dcl-proc bump;|  dcl-pi *n;|    a int(10);|  end-pi;|  a += 1;|end-proc;", 3, "parameter 1 of BUMP is numeric, and S is character")]
     [InlineData("show('x');|dcl-proc show;|  dcl-pi *n;|    a int(10) const;|  end-pi;|end-proc;", 2, "parameter 1 of SHOW is numeric, not character")]
     [InlineData("dcl-s n int(10);|n = p();|dcl-proc p;|end-proc;", 3, "P doesn't return a value, so it can't be in an expression")]
-    [InlineData("dcl-s n int(10);|n = p;|dcl-proc p;|  dcl-pi *n int(10);|  end-pi;|  return 1;|end-proc;", 3, "P is a procedure: in an expression, call it as P()")]
+    [InlineData("dcl-s n int(10);|n = add;|dcl-proc add;|  dcl-pi *n int(10);|    a int(10) const;|  end-pi;|  return a;|end-proc;", 3, "ADD needs 1 parameter, not 0")]
     [InlineData("dcl-proc p;|  dcl-pi *n;|    a int(10) const;|  end-pi;|  a = 2;|end-proc;", 6, "A is a CONST parameter: the procedure can't change it")]
     [InlineData("dcl-pr p;|  a int(10) const;|end-pr;|dcl-proc p;|  dcl-pi *n;|    a char(1) const;|  end-pi;|end-proc;", 5, "parameter 1 of P is numeric in its prototype, and character in its procedure interface")]
     // SQL.

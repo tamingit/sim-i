@@ -1109,6 +1109,15 @@ internal sealed class RpgParser
                     k.Type.ExtName = NameOf(table, keyword);
                     k.Type.ExtName = k.Type.ExtName[(k.Type.ExtName.LastIndexOf('/') + 1)..];
                     break;
+                case "EXTFLD":
+                    k.Type.ExtFld = args switch
+                    {
+                        null or [] => "",
+                        [Literal { Value: string field }] => field.Trim().ToUpperInvariant(),
+                        [NameExpr field] => field.Name,
+                        _ => throw new RpgSyntaxError("EXTFLD takes the external field's name"),
+                    };
+                    break;
                 case "DIM":
                     if (args is [SpecialExpr { Name: "*VAR" or "*AUTO" } varying, var maximum])
                     {
@@ -1217,7 +1226,8 @@ internal sealed class RpgParser
                 }
                 var line = _line;
                 var k = Keywords();
-                if (k.Type.Keyword is null && k.Type.Like is null) throw new RpgSyntaxError($"{(name.Length == 0 ? "*N" : name)} needs a type");
+                // An external subfield (EXTFLD) has its field's type.
+                if (k.Type.Keyword is null && k.Type.Like is null && k.Type.ExtFld is null) throw new RpgSyntaxError($"{(name.Length == 0 ? "*N" : name)} needs a type");
                 entries.Add(new VarDecl(line, name, k.Type, k.Inz, k.Position, k.Const, k.ByValue, k.Options));
             }
             catch (RpgUnsupported e)

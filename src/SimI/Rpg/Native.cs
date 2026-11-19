@@ -1,6 +1,6 @@
 // Procedures a prototype names with EXTPROC that aren't RPG: the integrated file system's C APIs
 // (open, read, write, close, lseek, unlink, stat, mkdir, opendir ...), errno and strerror, sleep,
-// system and getenv. They work on the machine's IFS folder, with IBM i's flag and errno values and
+// system, getenv and WebFacing's QqfEnvironment. They work on the machine's IFS folder, with IBM i's flag and errno values and
 // structure layouts. A file opened with O_TEXTDATA is read and written as text (UTF-8 in the folder,
 // characters in the program); any other as bytes.
 
@@ -27,7 +27,7 @@ internal sealed partial class Interpreter
     {
         "open", "open64", "read", "write", "close", "lseek", "lseek64", "unlink", "access", "mkdir", "rmdir", "rename",
         "Qp0lRenameKeep", "Qp0lRenameUnlink", "__errno", "strerror", "sleep", "usleep", "system", "getenv", "stat", "stat64",
-        "lstat", "lstat64", "opendir", "readdir", "closedir",
+        "lstat", "lstat64", "opendir", "readdir", "closedir", "QqfEnvironment",
     };
 
     // IBM i's open flags and errno values.
@@ -238,6 +238,9 @@ internal sealed partial class Interpreter
                 return new Pointer(ErrnoStorage, 0);
             case "strerror":
                 return StringPointer(ErrorTexts.GetValueOrDefault(Int(0), $"Error {Int(0)}."));
+            case "qqfenvironment":
+                // WebFacing's: whether the program runs under WebFacing (1) or in a 5250 session (0), as it does here.
+                return 0m;
             case "sleep":
                 Thread.Sleep(TimeSpan.FromSeconds(Math.Clamp(Int(0), 0, 3600)));
                 return 0m;

@@ -150,6 +150,9 @@ internal sealed class TypeSpec
     public string? Like { get; set; }
     public string? LikeDs { get; set; }
     public string? ExtName { get; set; }
+
+    /// <summary>EXTFLD(name): a subfield that is the external field of that name, renamed; "" for EXTFLD alone (the field of its own name).</summary>
+    public string? ExtFld { get; set; }
     public Expr? Dim { get; set; }
     public bool Qualified { get; set; }
     public List<VarDecl>? Fields { get; set; }

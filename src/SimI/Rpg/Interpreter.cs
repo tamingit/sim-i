@@ -444,15 +444,31 @@ internal sealed partial class Interpreter
                     if (columns.Count == 0) throw new RpgError(100, $"EXTNAME({table}): there's no such table");
                     fields.AddRange(columns.Select(c => new DsField(c.Name.ToUpperInvariant(), SqlType(c.Type), null, 0)));
                 }
+                // EXTFLD: an external field renamed (the prefix isn't put on it), or given an INZ of its own.
+                var renamed = new HashSet<int>();
+                foreach (var field in (spec.Fields ?? []).Where(f => f.Type.ExtFld is not null))
+                {
+                    var external = field.Type.ExtFld!.Length > 0 ? field.Type.ExtFld : field.Name;
+                    var k = fields.FindIndex(f => f.Name == external);
+                    if (k < 0 && field.Type.ExtFld.Length == 0 && spec.Prefix is { } named) k = fields.FindIndex(f => Prefixed(f.Name, named, spec.PrefixReplace) == field.Name);
+                    if (k < 0) throw new RpgError(100, $"{field.Name} EXTFLD: the structure has no external field {external}");
+                    if (field.Type.ExtFld.Length > 0)
+                    {
+                        fields[k] = fields[k] with { Name = field.Name };
+                        renamed.Add(k);
+                    }
+                    if (field.Inz is not null) fields[k] = fields[k] with { Inz = field.Inz };
+                }
                 if (spec.Prefix is { } prefix)
                 {
-                    for (var k = 0; k < fields.Count; k++) fields[k] = fields[k] with { Name = Prefixed(fields[k].Name, prefix, spec.PrefixReplace) };
+                    for (var k = 0; k < fields.Count; k++)
+                        if (!renamed.Contains(k)) fields[k] = fields[k] with { Name = Prefixed(fields[k].Name, prefix, spec.PrefixReplace) };
                 }
                 // Each subfield's place: after the one before, at POS, or OVERLAY'd on another (at a position in it, or *NEXT after the last one there).
                 var at = fields.Sum(f => Values.ByteLength(f.Type));
                 for (var k = 0; k < fields.Count; k++) fields[k] = fields[k] with { Position = 1 + fields.Take(k).Sum(f => Values.ByteLength(f.Type)) };
                 var next = new Dictionary<string, int>();
-                foreach (var field in spec.Fields ?? [])
+                foreach (var field in (spec.Fields ?? []).Where(f => f.Type.ExtFld is null))
                 {
                     var type = Resolve(field.Type, frame);
                     var length = Values.ByteLength(type) * Math.Max(1, type.Dim);

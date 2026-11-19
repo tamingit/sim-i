@@ -419,6 +419,8 @@ internal sealed class FixedForm
                     return;
                 }
                 var position = from.Length > 0 && _group == "DS" ? $" POS({from})" : "";
+                // E: one of the structure's external fields, renamed (EXTFLD) or with an INZ of its own.
+                if (external && _group == "DS" && !keywords.Contains("EXTFLD", StringComparison.OrdinalIgnoreCase)) keywords = ("EXTFLD " + keywords).TrimEnd();
                 Emit(n, $"{(name.Length == 0 ? "*N" : name)} {type}{position} {keywords}".TrimEnd());
                 break;
             default:

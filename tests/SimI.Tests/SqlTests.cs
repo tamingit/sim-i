@@ -284,6 +284,28 @@ public class SqlTests
     }
 
     [Fact]
+    public void ExternalSubfieldsCanBeRenamedAndInitialized()
+    {
+        using var machine = OpenMachine();
+        Assert.Empty(machine.RunScript(Setup.Replace("exec sql ", ""), "PRTUSER").Failures);
+        var (shown, error) = RpgTests.Run(machine, """
+            dcl-ds cust extname('CUSTOMER') prefix(c_);
+              custname extfld('NAME') inz('Nobody');
+              c_balance extfld inz(7);
+            end-ds;
+
+            dsply custname;
+            dsply %char(c_balance);
+            c_id = 4;
+            dsply %char(c_id);
+            *inlr = *on;
+            """);
+
+        Assert.Null(error);
+        Assert.Equal(["Nobody", "7.00", "4"], shown);
+    }
+
+    [Fact]
     public void ASystemNameIsAViewOfTheTable()
     {
         var translation = SqlTranslator.Translate("RENAME TABLE \"ITEM_CHG_LOG\" TO SYSTEM NAME \"ITMCLOG\"", "MYLIB");
