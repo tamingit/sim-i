@@ -803,7 +803,7 @@ public sealed partial class Machine
                 : throw new RemoteException($"member {member} isn't records of {data.Bytes} or {recordLength} bytes");
             var text = new StringBuilder(bytes.Length);
             for (var at = 0; at < bytes.Length; at += step)
-                text.Append(RemoteRecords.Characters(bytes.AsSpan(at + skip, data.Bytes), data.Ccsid).Replace('\0', ' ').TrimEnd()).Append('\n');
+                text.Append(RemoteRecords.SourceLine(bytes.AsSpan(at + skip, data.Bytes), data.Ccsid)).Append('\n');
             return text.ToString();
         }
 

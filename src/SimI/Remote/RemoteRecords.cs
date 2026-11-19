@@ -94,6 +94,19 @@ internal static class RemoteRecords
         EncodingOf(ccsid) is { } encoding ? encoding.GetString(bytes) : Ebcdic.Decode(bytes);
 
     /// <summary>
+    /// A source record's text without its trailing blanks. Its control characters are blanks: the bytes
+    /// X'00' to X'3F' are 5250 display attributes when SEU shows a line (a comment in white or red, say),
+    /// and as text they'd be C1 controls an editor draws as boxes. One for one, so columns stay put.
+    /// </summary>
+    public static string SourceLine(ReadOnlySpan<byte> bytes, int ccsid)
+    {
+        var text = Characters(bytes, ccsid).ToCharArray();
+        for (var i = 0; i < text.Length; i++)
+            if (char.IsControl(text[i])) text[i] = ' ';
+        return new string(text).TrimEnd();
+    }
+
+    /// <summary>
     /// A field's value in a record, as text PostgreSQL reads: characters without their trailing blanks,
     /// a number with a decimal point, a date as yyyy-mm-dd. A value that can't be read (a packed
     /// field that doesn't hold a number, say) is the type's zero, and <paramref name="bad"/> counts it.

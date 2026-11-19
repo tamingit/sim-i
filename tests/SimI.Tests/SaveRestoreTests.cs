@@ -74,6 +74,17 @@ public class SaveRestoreTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void SourceLinesLoseTheirDisplayAttributes()
+    {
+        // "     C* old" with X'22' (white) after the asterisk and X'28' (red) at the end, as SEU colours a comment.
+        var line = Convert.FromHexString("4040404040C35C22969384284040");
+        Assert.Equal("     C* old",RemoteRecords.SourceLine(line, 37));
+        // X'00' too, and a CCSID .NET reads itself.
+        Assert.Equal("A B", RemoteRecords.SourceLine(Convert.FromHexString("C100C2"), 37));
+        Assert.Equal("A  B", RemoteRecords.SourceLine(Convert.FromHexString("C13A40C2"), 500));
+    }
+
+    [Fact]
     public void DatesTimesAndTimestamps()
     {
         static byte[] E(string text) => Ebcdic.Encode(text);
