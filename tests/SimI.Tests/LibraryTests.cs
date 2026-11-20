@@ -127,6 +127,36 @@ public class LibraryTests
     }
 
     [Fact]
+    public void ArcadsHashInAFileNameIsAHash()
+    {
+        // ARCAD writes # in a name as #035: C#035INACTIVE is member C#INACTIVE, and a program can copy it in.
+        var folder = TempFolder();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(folder, "BWIDATA", "QRPGLESRC"));
+            File.WriteAllText(Path.Combine(folder, "BWIDATA", "QRPGLESRC", "C#035INACTIVE.rpgleinc"), "**FREE\ndcl-c INACTIVE 'I';\n");
+            File.WriteAllText(Path.Combine(folder, "BWIDATA", "QRPGLESRC", "brr100.rpgle"),
+                "**FREE\n/copy BWIDATA/QRPGLESRC,C#INACTIVE\ndsply INACTIVE;\nreturn;\n");
+            using var machine = Machine.Open();
+
+            Assert.Equal(0, machine.Import(folder, _ => { }));
+
+            Assert.Equal(["BWIDATA/QRPGLESRC(BRR100)", "BWIDATA/QRPGLESRC(C#INACTIVE)"], machine.Store.Members().Select(m => m.ToString()).Order());
+            Assert.NotNull(machine.Store.FindObject("BWIDATA", "BRR100", "*PGM"));
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("c#035inactive", "C#INACTIVE")]
+    [InlineData("#035A#035B", "#A#B")]
+    [InlineData("BRR100", "BRR100")]
+    public void NamesFromPathsUndoArcadsHash(string part, string name) => Assert.Equal(name, Machine.NameFromPath(part));
+
+    [Fact]
     public void ManyLibrariesCanBeMade()
     {
         using var machine = Machine.Open();

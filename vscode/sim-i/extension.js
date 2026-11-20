@@ -8,6 +8,7 @@ const vscode = require("vscode");
 const path = require("path");
 const filesView = require("./filesView");
 const relatedView = require("./relatedView");
+const { nameFromPath } = require("./related");
 
 /** The source types Sim i reads, by file extension. */
 const SOURCE = new Set([".rpgle", ".sqlrpgle", ".rpgleinc", ".dspf", ".prtf", ".pf", ".lf", ".sql", ".clle", ".clp", ".cmd", ".table", ".view", ".index", ".cpy", ".msgf"]);
@@ -104,7 +105,7 @@ function libraryOf(uri) {
   const root = sourceRoot(uri);
   if (!root) return null;
   const parts = path.relative(root, uri.fsPath).split(path.sep);
-  return parts.length >= 2 && !parts[0].startsWith("..") ? parts[0].toUpperCase() : null;
+  return parts.length >= 2 && !parts[0].startsWith("..") ? nameFromPath(parts[0]) : null;
 }
 
 // ---- the real IBM i that files are copied from ----

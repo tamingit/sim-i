@@ -206,6 +206,9 @@ const OBJECTS = {
   ".pf": "file", ".lf": "file", ".dspf": "file", ".prtf": "file", ".table": "file", ".view": "file", ".index": "file",
 };
 
+/** The name a folder or file (without its extension) gives a library or member: ARCAD writes # as #035. */
+const nameFromPath = part => part.replace(/#035/g, "#").toUpperCase();
+
 /**
  * One source file: its member name and library (from LIBRARY/FILE/member.ext), what it refers to, and what it
  * defines: itself (a program, a copybook or a file) and the tables or procedures in it.
@@ -215,8 +218,8 @@ function read(relative, text) {
   const file = parts[parts.length - 1];
   const dot = file.lastIndexOf(".");
   const extension = dot > 0 ? file.slice(dot).toLowerCase() : "";
-  const name = (dot > 0 ? file.slice(0, dot) : file).toUpperCase();
-  const library = parts.length >= 2 ? parts[0].toUpperCase() : null;
+  const name = nameFromPath(dot > 0 ? file.slice(0, dot) : file);
+  const library = parts.length >= 2 ? nameFromPath(parts[0]) : null;
   const found = (READERS[extension] || (() => ({ refs: [], defines: [] })))(text.replace(/\r\n/g, "\n"));
   const defines = [...found.defines];
   if (OBJECTS[extension]) defines.unshift(ref(OBJECTS[extension], name, extension.slice(1), 1, library));
@@ -234,4 +237,4 @@ function read(relative, text) {
   return { relative, name, library, extension, refs, defines, words: found.words || new Set() };
 }
 
-module.exports = { read, READERS, OBJECTS };
+module.exports = { read, nameFromPath, READERS, OBJECTS };

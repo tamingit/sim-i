@@ -681,9 +681,9 @@ public sealed class WebServer : IAsyncDisposable
         var folders = parts.Count > 2 ? parts.Skip(1).Take(parts.Count - 2).ToList() : [];
         // A text file is a TXT member only in a source file's folder (LIB/QTXTSRC/NOTES.TXT).
         if (Machine.TypeForExtension(Path.GetExtension(fileName)) is not { } type || type == "TXT" && folders.Count < 2) return null;
-        var lib = folders.Count > 0 ? folders[0].ToUpperInvariant() : library;
-        var srcFile = folders.Count > 1 ? folders[^1].ToUpperInvariant() : file.Length > 0 ? file.ToUpperInvariant() : Machine.DefaultFile(type);
-        return (lib, srcFile, Path.GetFileNameWithoutExtension(fileName).Trim().ToUpperInvariant(), type);
+        var lib = folders.Count > 0 ? Machine.NameFromPath(folders[0]) : library;
+        var srcFile = folders.Count > 1 ? Machine.NameFromPath(folders[^1]) : file.Length > 0 ? file.ToUpperInvariant() : Machine.DefaultFile(type);
+        return (lib, srcFile, Machine.NameFromPath(Path.GetFileNameWithoutExtension(fileName)), type);
     }
 
     private static Member? MemberFrom(string? library, string? file, string? name, string? type, string source, out string? problem)
