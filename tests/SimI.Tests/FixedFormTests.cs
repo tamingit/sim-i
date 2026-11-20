@@ -91,6 +91,36 @@ public class FixedFormTests
     }
 
     [Fact]
+    public void ANamedDataAreaDataStructureDefinedAsTheLdaIsTheJobsLocalDataArea()
+    {
+        using var machine = Machine.Open();
+        // As menu programs keep the company in the LDA: a UDS named LDA, which *DTAARA DEFINE makes the *LDA.
+        string[] Program(params string[] calculations) =>
+        [
+            Spec('D', (7, "LDA"), (23, "UDS")),
+            D("LDACMP", "", "10", from: "1"),
+            D("LDAOPT", "", "93", from: "89"),
+            C("DEFINE", factor1: "*DTAARA", factor2: "*LDA", result: "LDA"),
+            .. calculations,
+            C("SETON", hi: "LR"),
+        ];
+        var job = new BatchJob("PRTUSER", CancellationToken.None);
+        foreach (var (name, lines) in new[]
+        {
+            ("SETLDA", Program(C("MOVEL", factor2: "'ACME'", result: "LDACMP"), C("MOVEL", factor2: "'MENU'", result: "LDAOPT"), C("OUT", factor2: "LDA"))),
+            ("GETLDA", Program(C("IN", factor2: "LDA"), C("DSPLY", factor1: "LDACMP"), C("DSPLY", factor1: "LDAOPT"))),
+        })
+        {
+            var member = new Member("QGPL", "QRPGLESRC", name, "RPGLE", string.Join('\n', lines) + "\n");
+            Assert.DoesNotContain(machine.Save(member), d => d.Severity is Severity.Error or Severity.Unsupported);
+            Assert.True(machine.Compile(member).Ok);
+            var result = machine.Run($"CALL {name}", job);
+            Assert.True(result.Ok, result.Message);
+        }
+        Assert.Equal(["ACME", "MENU"], job.Messages);
+    }
+
+    [Fact]
     public void DivAndMvrGiveTheQuotientAndTheRemainder()
     {
         using var machine = Machine.Open();

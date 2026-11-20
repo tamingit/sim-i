@@ -47,6 +47,8 @@ internal sealed class FixedForm
     private readonly Dictionary<string, List<string>> _keyLists = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<(string Target, string Factor1, string Factor2)>> _parameterLists = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _declared = new(StringComparer.OrdinalIgnoreCase);
+    // The data area *DTAARA DEFINE gives a name (*LDA, or a data area's name; blank: its own), for a UDS declared before it.
+    private readonly Dictionary<string, string> _dataAreas = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _files = new(StringComparer.OrdinalIgnoreCase);
     private int _hidden;
 
@@ -135,6 +137,11 @@ internal sealed class FixedForm
             var factor1 = Col(line, 12, 25).Trim();
             var factor2 = Col(line, 36, 49).Trim();
             var result = Col(line, 50, 63).Trim();
+            if (op == "DEFINE" && factor1.Equals("*DTAARA", StringComparison.OrdinalIgnoreCase) && result.Length > 0)
+            {
+                _dataAreas[result] = factor2;
+                continue;
+            }
             if (op == "KLIST")
             {
                 keyList = factor1;
@@ -399,7 +406,15 @@ internal sealed class FixedForm
                 if (external && !keywords.Contains("EXTNAME", StringComparison.OrdinalIgnoreCase)) words.Append($" EXTNAME({name})");
                 if (special == 'S') words.Append(" PSDS");
                 _psds = special == 'S';
-                if (special == 'U') words.Append(name.Length == 0 ? " DTAARA(*LDA)" : " DTAARA(*AUTO)");
+                // A data area data structure: read at the start and written at the end. Named, it's the data area of
+                // its name, unless *DTAARA DEFINE gives it another (*DTAARA DEFINE *LDA LDA: the job's local data area).
+                if (special == 'U')
+                {
+                    words.Append(name.Length == 0 ? " DTAARA(*LDA)"
+                        : !_dataAreas.TryGetValue(name, out var area) || area.Length == 0 ? " DTAARA(*AUTO)"
+                        : area.StartsWith('*') ? $" DTAARA(*AUTO : {area.ToUpperInvariant()})"
+                        : $" DTAARA(*AUTO : '{area.ToUpperInvariant()}')");
+                }
                 if (to.Length > 0 && from.Length == 0) words.Append($" LEN({to})");
                 if (keywords.Length > 0) words.Append(' ').Append(keywords);
                 Emit(n, words.ToString());
