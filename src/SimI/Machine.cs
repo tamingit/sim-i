@@ -112,6 +112,12 @@ public sealed partial class Machine : IDisposable
     /// <summary>Whether this is a name an object, member or library can have.</summary>
     public static bool IsName(string name) => ObjectName().IsMatch(name);
 
+    /// <summary>
+    /// The name a folder or file (its extension already taken off) gives its library, source file or member,
+    /// in capitals. ARCAD writes # in a name as #035 (its character code), so C#035INACTIVE is C#INACTIVE.
+    /// </summary>
+    public static string NameFromPath(string part) => part.Trim().Replace("#035", "#", StringComparison.Ordinal).ToUpperInvariant();
+
     // ---- source types ----
 
     /// <summary>
@@ -1543,9 +1549,9 @@ public sealed partial class Machine : IDisposable
             if (TypeForExtension(Path.GetExtension(path)) is not { } type) continue;
             // Folders a tool keeps for itself (.ibmi, .vscode ...) aren't libraries.
             if (Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar).Any(p => p.StartsWith('.'))) continue;
-            var name = Path.GetFileNameWithoutExtension(path).ToUpperInvariant();
+            var name = NameFromPath(Path.GetFileNameWithoutExtension(path));
             var folders = Path.GetRelativePath(root, Path.GetDirectoryName(path)!).Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries)
-                .Where(f => f != ".").Select(f => f.ToUpperInvariant()).ToList();
+                .Where(f => f != ".").Select(NameFromPath).ToList();
             // A text file is a TXT member only in a source file's folder (LIB/QTXTSRC/NOTES.TXT).
             if (type == "TXT" && folders.Count < 2) continue;
             var library = folders.Count > 0 ? folders[0] : CurrentLibrary;

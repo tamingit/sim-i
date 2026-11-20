@@ -7,6 +7,7 @@
 
 const vscode = require("vscode");
 const path = require("path");
+const { nameFromPath } = require("./related");
 
 const VIEW = "simI.files";
 const RPG = [".rpgle", ".sqlrpgle"];
@@ -45,7 +46,7 @@ class FilesView {
     let state = this.programs.get(uri.toString());
     if (!state) {
       state = {
-        uri, program: path.basename(uri.fsPath, path.extname(uri.fsPath)).toUpperCase(), library: this.sim.libraryOf(uri),
+        uri, program: nameFromPath(path.basename(uri.fsPath, path.extname(uri.fsPath))), library: this.sim.libraryOf(uri),
         files: [], remote: null, storage: null, message: "", loaded: false, chosen: new Set(), filters: {}, touched: false,
       };
       this.programs.set(uri.toString(), state);

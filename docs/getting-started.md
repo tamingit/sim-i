@@ -28,7 +28,7 @@ source/
       tables.sql
 ```
 
-Extensions it reads: `.rpgle`, `.sqlrpgle`, `.rpgleinc`, `.dspf`, `.prtf`, `.sql`, `.clle`, `.cmd`. Folders whose names start with a dot (`.git`, `.vscode`) are skipped. A file straight in a library folder goes in the source file its type usually has (`QRPGLESRC`, `QDDSSRC` or `QSQLSRC`), and a file straight in the source folder goes to `QGPL`.
+Extensions it reads: `.rpgle`, `.sqlrpgle`, `.rpgleinc`, `.dspf`, `.prtf`, `.sql`, `.clle`, `.cmd`. Folders whose names start with a dot (`.git`, `.vscode`) are skipped. A file straight in a library folder goes in the source file its type usually has (`QRPGLESRC`, `QDDSSRC` or `QSQLSRC`), and a file straight in the source folder goes to `QGPL`. A name with `#035` in it, as ARCAD saves `#`, has `#` there: `C#035INACTIVE.rpgleinc` is member `C#INACTIVE`.
 
 Your repository may keep this layout at its root or in a subfolder. Either way, the folder you give Sim i is the one that holds the library folders. In the rest of this guide it is `/home/you/work/erp-repo/source`.
 

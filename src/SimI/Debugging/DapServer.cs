@@ -543,12 +543,12 @@ public sealed class DapServer : IAsyncDisposable
         private (string? Library, string Name) MemberOf(string path)
         {
             var normal = path.Replace('\\', '/');
-            var name = System.IO.Path.GetFileNameWithoutExtension(normal).ToUpperInvariant();
+            var name = Machine.NameFromPath(System.IO.Path.GetFileNameWithoutExtension(normal));
             string? library = null;
             if (_sourceRoot is { } root && normal.StartsWith(root.Replace('\\', '/') + "/", StringComparison.OrdinalIgnoreCase))
             {
                 var parts = normal[(root.Length + 1)..].Split('/', StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2 && Store.IsLibraryName(parts[0].ToUpperInvariant())) library = parts[0].ToUpperInvariant();
+                if (parts.Length >= 2 && Store.IsLibraryName(Machine.NameFromPath(parts[0]))) library = Machine.NameFromPath(parts[0]);
             }
             return (library, name);
         }
