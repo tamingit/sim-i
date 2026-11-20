@@ -187,6 +187,16 @@ class FilesView {
     this.render();
   }
 
+  /** Every file that can be copied checked (to copy them all again: a copy replaces what's on Sim i), or none. */
+  checkAll(on) {
+    const state = this.current;
+    if (!state || !state.remote) return;
+    state.chosen.clear();
+    if (on) for (const r of state.remote.files) if (r.receivable) state.chosen.add(key(r));
+    state.touched = true;
+    this.render();
+  }
+
   checked(items) {
     const state = this.current;
     if (!state) return;
@@ -209,6 +219,8 @@ class FilesView {
     vscode.commands.executeCommand("setContext", "simI.files.remote", !!(state && state.remote));
     vscode.commands.executeCommand("setContext", "simI.files.withData", this.withData);
     vscode.commands.executeCommand("setContext", "simI.files.copying", this.copying);
+    const receivable = state && state.remote ? state.remote.files.filter(r => r.receivable) : [];
+    vscode.commands.executeCommand("setContext", "simI.files.allChecked", receivable.length > 0 && receivable.every(r => state.chosen.has(key(r))));
     this.changed.fire();
   }
 
@@ -228,7 +240,7 @@ class FilesView {
     const picked = state.remote.files.filter(r => r.receivable && state.chosen.has(key(r)));
     const need = picked.reduce((sum, r) => sum + (this.withData ? r.estimate : r.bare), 0);
     const free = state.storage ? state.storage.free : null;
-    if (picked.length === 0) return text + " Check the files to copy." + (free !== null && free !== undefined ? ` ${bytes(free)} free on Sim i's database server.` : "");
+    if (picked.length === 0) return text + " Check the files to copy (the double check copies them all, again for those on Sim i)." + (free !== null && free !== undefined ? ` ${bytes(free)} free on Sim i's database server.` : "");
     text = `${plural(picked.length, "file")} checked, ${this.withData ? "with" : "without"} records: about ${bytes(need)}`
       + (Object.values(state.filters).some(Boolean) ? " without their filters (less with them)" : "");
     if (free === null || free === undefined) return text + ". The database server doesn't say how much room it has.";
@@ -305,6 +317,8 @@ function register(context, sim, remote, output) {
     view.onDidChangeCheckboxState(e => files.checked(e.items)),
     vscode.commands.registerCommand("simI.files.refresh", () => files.current && files.load(files.current, true, false)),
     vscode.commands.registerCommand("simI.files.find", () => files.find()),
+    vscode.commands.registerCommand("simI.files.checkAll", () => files.checkAll(true)),
+    vscode.commands.registerCommand("simI.files.uncheckAll", () => files.checkAll(false)),
     vscode.commands.registerCommand("simI.files.copy", () => files.copy()),
     vscode.commands.registerCommand("simI.files.withData", () => { files.withData = true; files.render(); }),
     vscode.commands.registerCommand("simI.files.withoutData", () => { files.withData = false; files.render(); }),
