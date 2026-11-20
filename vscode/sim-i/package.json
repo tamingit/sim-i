@@ -283,6 +283,18 @@
         "icon": "$(search)"
       },
       {
+        "command": "simI.files.checkAll",
+        "title": "Check Every File (to Copy Them All Again)",
+        "category": "Sim i",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "simI.files.uncheckAll",
+        "title": "Uncheck Every File",
+        "category": "Sim i",
+        "icon": "$(clear-all)"
+      },
+      {
         "command": "simI.files.copy",
         "title": "Copy the Checked Files to Sim i",
         "category": "Sim i",
@@ -359,29 +371,39 @@
           "group": "navigation@1"
         },
         {
+          "command": "simI.files.checkAll",
+          "when": "view == simI.files && simI.files.remote && !simI.files.copying && !simI.files.allChecked",
+          "group": "navigation@2"
+        },
+        {
+          "command": "simI.files.uncheckAll",
+          "when": "view == simI.files && simI.files.remote && !simI.files.copying && simI.files.allChecked",
+          "group": "navigation@2"
+        },
+        {
           "command": "simI.files.copy",
           "when": "view == simI.files && simI.files.remote && !simI.files.copying",
-          "group": "navigation@2"
+          "group": "navigation@3"
         },
         {
           "command": "simI.files.withoutData",
           "when": "view == simI.files && simI.files.remote && simI.files.withData",
-          "group": "navigation@3"
+          "group": "navigation@4"
         },
         {
           "command": "simI.files.withData",
           "when": "view == simI.files && simI.files.remote && !simI.files.withData",
-          "group": "navigation@3"
+          "group": "navigation@4"
         },
         {
           "command": "simI.files.cancel",
           "when": "view == simI.files && simI.files.copying",
-          "group": "navigation@4"
+          "group": "navigation@5"
         },
         {
           "command": "simI.files.refresh",
           "when": "view == simI.files",
-          "group": "navigation@5"
+          "group": "navigation@6"
         },
         {
           "command": "simI.files.settings",
