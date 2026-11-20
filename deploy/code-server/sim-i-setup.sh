@@ -36,5 +36,32 @@ cat > "$data/Machine/settings.json" <<EOF
 }
 EOF
 
+# Debugging without writing a launch.json first: attach (for programs with screens, called from a 5250 session) is
+# first, so Run and Debug starts with it; launch calls the program of the RPG file open in the editor. Written only
+# when the folder has no launch.json, so one that's there (changed, or committed) is never replaced.
+launch=/source/.vscode/launch.json
+if [ ! -e "$launch" ]; then
+  if mkdir -p /source/.vscode 2>/dev/null && cat > "$launch" 2>/dev/null <<'EOF'
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "sim-i",
+      "request": "attach",
+      "name": "Sim i: attach to my 5250 session"
+    },
+    {
+      "type": "sim-i",
+      "request": "launch",
+      "name": "Sim i: call the program of this file"
+    }
+  ]
+}
+EOF
+  then :
+  else echo "sim-i-setup: couldn't write $launch: debugging needs a launch configuration of your own" >&2
+  fi
+fi
+
 if [ -n "${SIM_I_GIT_NAME:-}" ]; then git config --global user.name "$SIM_I_GIT_NAME"; fi
 if [ -n "${SIM_I_GIT_EMAIL:-}" ]; then git config --global user.email "$SIM_I_GIT_EMAIL"; fi
