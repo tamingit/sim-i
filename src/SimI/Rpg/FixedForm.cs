@@ -853,9 +853,10 @@ internal sealed class FixedForm
             case "DIV":
             {
                 var dividend = factor1.Length > 0 ? factor1 : result;
-                // A remainder (MVR) comes from what was divided before the quotient took its place.
+                // A remainder (MVR) comes from what was divided before the quotient took its place:
+                // kept in the widest number Sim i runs (28 digits), with 19 of them before the point.
                 var kept = $"@DIV{++_hidden}";
-                Insert(n, $"DCL-S {kept} PACKED(31 : 9)");
+                Insert(n, $"DCL-S {kept} PACKED(28 : 9)");
                 Emit(n, $"{kept} = {dividend}");
                 Arithmetic(n, result, $"({kept}) / ({factor2})", extender, hi, lo, eq);
                 _lastDivide = (kept, factor2, result);

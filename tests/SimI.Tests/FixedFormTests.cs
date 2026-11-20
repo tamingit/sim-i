@@ -91,6 +91,31 @@ public class FixedFormTests
     }
 
     [Fact]
+    public void DivAndMvrGiveTheQuotientAndTheRemainder()
+    {
+        using var machine = Machine.Open();
+        var (shown, error) = Run(machine, "DIVMVR",
+        [
+            Spec('H', (7, "DFTACTGRP(*NO)")),
+            // A cursor position from an INFDS, as a menu program splits it into row and column.
+            D("CURPOS", "S", "4", 'B', "0", "INZ(1554)"),
+            D("BIG", "S", "15", 'P', "2", "INZ(1234567890123.45)"),
+            C("DIV", factor1: "CURPOS", factor2: "256", result: "ROW", length: "3", decimals: "0"),
+            C("MVR", result: "COL", length: "3", decimals: "0"),
+            C("DSPLY", factor1: "ROW"),
+            C("DSPLY", factor1: "COL"),
+            C("DIV", factor1: "BIG", factor2: "7", result: "QUOT", length: "15", decimals: "2"),
+            C("MVR", result: "REMAIN", length: "15", decimals: "2"),
+            C("DSPLY", factor1: "QUOT"),
+            C("DSPLY", factor1: "REMAIN"),
+            C("SETON", hi: "LR"),
+        ]);
+        Assert.True(error is null, error);
+        // 1554 is 6 * 256 + 18; the remainder is what's left after the quotient as its result field keeps it.
+        Assert.Equal(["6", "18", "176366841446.20", ".05"], shown);
+    }
+
+    [Fact]
     public void SequenceNumbersCopyLinesBlankSpecsAndParameterFieldsAreAsTheCompilerTakesThem()
     {
         using var machine = Machine.Open();
