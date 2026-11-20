@@ -655,7 +655,7 @@ public sealed partial class Machine
 
         /// <summary>
         /// A member's records into the file's table. They're received as they are when every record is
-        /// there and no field can be null; otherwise through a view (in the session's QTEMP) that adds
+        /// there and no field can be null; otherwise through a view (in the session's QTEMP; a table, for a member named) that adds
         /// each record's relative record number and a flag for each field that can be null.
         /// </summary>
         private (long Count, long Bad) Load(string file, string table, RemoteLayout layout, List<RemoteField> fields, RemoteMember member, bool namedMember)
@@ -671,20 +671,25 @@ public sealed partial class Machine
             if (!direct)
             {
                 var source = $"{RemoteSystem.Quoted(library)}.{RemoteSystem.Quoted(file)}";
-                if (namedMember)
-                {
-                    remote.TryCommand("RUNSQL SQL('DROP ALIAS QTEMP.QFKA') COMMIT(*NONE) NAMING(*SQL)");
-                    remote.Sql($"CREATE ALIAS QTEMP.QFKA FOR {source} ({RemoteSystem.Quoted(member.Name)})");
-                    source = "QTEMP.QFKA";
-                }
                 remote.TryCommand("DLTF FILE(QTEMP/QFKV)");
                 var select = new List<string> { "RRN(A) AS QFKRRN" };
                 // A null can't be read through FTP, so a null-capable field comes as its value or a default, with its flag after.
                 select.AddRange(fields.Select(f => f.Nullable ? $"COALESCE(A.{RemoteSystem.Quoted(f.Name)}, {NullDefault(f)}) AS {RemoteSystem.Quoted(f.Name)}" : $"A.{RemoteSystem.Quoted(f.Name)}"));
                 select.AddRange(nullable.Select((f, i) => $"CAST(CASE WHEN A.{RemoteSystem.Quoted(f.Name)} IS NULL THEN '1' ELSE '0' END AS CHAR(1)) AS QFN{i + 1:00000}"));
+                var selected = string.Join(", ", select);
+                var where = filter is null ? "" : $" WHERE {filter}";
                 try
                 {
-                    remote.Sql($"CREATE VIEW QTEMP.QFKV AS SELECT {string.Join(", ", select)} FROM {source} A{(filter is null ? "" : $" WHERE {filter}")}");
+                    if (namedMember)
+                    {
+                        // An alias for one member can't be in a view (SQL7030), only in a query: the member's
+                        // records are put in a table in QTEMP, shaped like the view would be, through the alias.
+                        remote.TryCommand("RUNSQL SQL('DROP ALIAS QTEMP.QFKA') COMMIT(*NONE) NAMING(*SQL)");
+                        remote.Sql($"CREATE ALIAS QTEMP.QFKA FOR {source} ({RemoteSystem.Quoted(member.Name)})");
+                        remote.Sql($"CREATE TABLE QTEMP.QFKV AS (SELECT {selected} FROM {source} A) WITH NO DATA");
+                        remote.Sql($"INSERT INTO QTEMP.QFKV SELECT {selected} FROM QTEMP.QFKA A{where}");
+                    }
+                    else remote.Sql($"CREATE VIEW QTEMP.QFKV AS SELECT {selected} FROM {source} A{where}");
                 }
                 catch (RemoteException e) when (filter is not null)
                 {
